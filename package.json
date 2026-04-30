@@ -3,14 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "backend",
-    "frontend"
-  ],
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "lint": "echo \"No lint targets configured yet\" && exit 0",
     "test": "echo \"No test targets configured yet\" && exit 0",
-    "prepare": "node -e \"process.env.CI || require('child_process').execSync('husky', {stdio: 'inherit'})\""
+    "prepare": "husky"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.2",
