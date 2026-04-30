@@ -1,0 +1,89 @@
+name: Autonomous CI Feedback Loop
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  validation-and-remediation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Execute CI Suite (Lint & Test)
+        id: test_suite
+        continue-on-error: true
+        run: |
+          touch lint_output.txt test_output.txt
+          set -e
+          pnpm run lint > lint_output.txt 2>&1 || (echo "LINT_FAILED" && exit 1)
+          pnpm run test > test_output.txt 2>&1 || (echo "TEST_FAILED" && exit 1)
+
+      - name: Capture Failure Trace
+        if: steps.test_suite.outcome == 'failure'
+        id: capture_trace
+        run: |
+          echo "error_trace<<EOF" >> $GITHUB_OUTPUT
+          echo "=== LINTING ERRORS ===" >> $GITHUB_OUTPUT
+          cat lint_output.txt | tail -n 100 >> $GITHUB_OUTPUT
+          echo "=== TESTING ERRORS ===" >> $GITHUB_OUTPUT
+          cat test_output.txt | tail -n 150 >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Configure Git Identity
+        if: steps.test_suite.outcome == 'failure'
+        run: |
+          git config user.name "claude-agent[bot]"
+          git config user.email "claude-agent[bot]@users.noreply.github.com"
+
+      - name: Autonomous Remediation Dispatch
+        if: steps.test_suite.outcome == 'failure'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            
+            CRITICAL REFLECTION DIRECTIVE:
+            The recent code modifications failed the CI test suite. Act as a senior debugging engineer to implement a definitive fix.
+            
+            <error_trace>
+            ${{ steps.capture_trace.outputs.error_trace }}
+            </error_trace>
+            
+            1. Verify your fix against the `ARCHITECTURE.md` constraints.
+            2. Correct the failing files.
+            3. Run `pnpm run lint` and `pnpm run test` locally using Bash.
+            4. Commit the resolution directly to the current branch using `git commit` and `git push`.
+          claude_args: >-
+            --model claude-3-7-sonnet-20250219
+            --max-turns 20
+            --allowedTools "Bash(pnpm run lint,pnpm run test,git add *,git commit *,git push *),Read,Write,Edit,Glob,Grep"
+
+      - name: Enforce Pipeline Failure
+        if: steps.test_suite.outcome == 'failure'
+        run: |
+          echo "Initial CI failed. Claude attempted remediation. Review PR for updates."
+          exit 1

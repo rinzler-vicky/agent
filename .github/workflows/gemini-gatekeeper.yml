@@ -1,0 +1,130 @@
+name: AI Gatekeeper - Structural Debt Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  structural-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Pull Request Diff
+        id: extract_diff
+        run: gh pr diff ${{ github.event.pull_request.number }} > pr_diff.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Review Strategy
+        id: strategy
+        run: |
+          if [[ -n "${{ secrets.GEMINI_API_KEY }}" ]]; then
+            echo "reviewer=gemini" >> $GITHUB_OUTPUT
+            echo "Using Gemini for architectural review"
+          elif [[ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]]; then
+            echo "reviewer=claude" >> $GITHUB_OUTPUT
+            echo "Using Claude for architectural review"
+          else
+            echo "::error::No AI reviewer API key found. Set either GEMINI_API_KEY or ANTHROPIC_API_KEY"
+            exit 1
+          fi
+
+      - name: Execute Gemini Architectural Review
+        if: steps.strategy.outputs.reviewer == 'gemini'
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: true
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.GEMINI_MODEL || 'gemini-2.0-flash' }}
+          prompt: |
+            @backend/ARCHITECTURE.md
+            @frontend/ARCHITECTURE.md
+            @.agentic/STATE.md
+            @pr_diff.txt
+
+            ROLE: Principal Architect. Analyze the pull request diff to prevent structural debt. Do not nitpick formatting. Audit purely for architectural compliance.
+
+            EVALUATION CRITERIA:
+            1. Does this diff violate any constraint listed in the ARCHITECTURE.md files?
+            2. Do backend changes correctly utilize the policy engine without bypassing security?
+            3. Was STATE.md successfully updated?
+            4. Does the code introduce tangled dependencies?
+
+            OUTPUT PROTOCOL:
+            Output a Markdown report identifying exact files violating the architecture and suggest refactoring. If all rules are respected, output a clear approval message.
+          workflow_name: 'AI Gatekeeper — Structural Debt Review'
+
+      - name: Setup Node for Claude Review
+        if: steps.strategy.outputs.reviewer == 'claude'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Execute Claude Architectural Review
+        if: steps.strategy.outputs.reviewer == 'claude'
+        id: claude_review
+        run: |
+          # Read architecture files and PR diff
+          BACKEND_ARCH=$(cat backend/ARCHITECTURE.md 2>/dev/null || echo "No backend architecture file")
+          FRONTEND_ARCH=$(cat frontend/ARCHITECTURE.md 2>/dev/null || echo "No frontend architecture file")
+          STATE=$(cat .agentic/STATE.md 2>/dev/null || echo "No state file")
+          DIFF=$(cat pr_diff.txt)
+
+          # Create prompt
+          PROMPT="ROLE: Principal Architect. Analyze the pull request diff to prevent structural debt. Do not nitpick formatting. Audit purely for architectural compliance.
+
+          BACKEND ARCHITECTURE:
+          $BACKEND_ARCH
+
+          FRONTEND ARCHITECTURE:
+          $FRONTEND_ARCH
+
+          CURRENT STATE:
+          $STATE
+
+          PULL REQUEST DIFF:
+          $DIFF
+
+          EVALUATION CRITERIA:
+          1. Does this diff violate any constraint listed in the ARCHITECTURE.md files?
+          2. Do backend changes correctly utilize the policy engine without bypassing security?
+          3. Was STATE.md successfully updated?
+          4. Does the code introduce tangled dependencies?
+
+          OUTPUT PROTOCOL:
+          Output a Markdown report identifying exact files violating the architecture and suggest refactoring. If all rules are respected, output a clear approval message."
+
+          # Call Claude API
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: ${{ secrets.ANTHROPIC_API_KEY }}" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "{
+              \"model\": \"claude-sonnet-4-5-20250929\",
+              \"max_tokens\": 4096,
+              \"messages\": [{
+                \"role\": \"user\",
+                \"content\": $(echo "$PROMPT" | jq -Rs .)
+              }]
+            }")
+
+          # Extract review text
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "Error: Unable to get review from Claude"')
+
+          # Save review to file
+          echo "$REVIEW" > claude_review.md
+
+          # Post as PR comment
+          gh pr comment ${{ github.event.pull_request.number }} --body "## 🤖 AI Gatekeeper — Architectural Review (Claude)
+
+          $REVIEW"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

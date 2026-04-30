@@ -1,0 +1,63 @@
+name: Headless Claude Backend Dispatcher
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  claude-execution:
+    if: github.event.label.name == 'route: claude-backend'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install Monorepo Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure Git Identity
+        run: |
+          git config user.name "claude-agent[bot]"
+          git config user.email "claude-agent[bot]@users.noreply.github.com"
+
+      - name: Execute Claude Headless Agent
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO CONTEXT: ${{ github.repository }}
+            ISSUE NUMBER: ${{ github.event.issue.number }}
+            ISSUE TITLE: ${{ github.event.issue.title }}
+            ISSUE BODY: ${{ github.event.issue.body }}
+            
+            CRITICAL HEADLESS DIRECTIVE:
+            You must act autonomously to resolve the issue.
+            
+            1. Read `.agentic/STATE.md` to establish context.
+            2. Read `backend/ARCHITECTURE.md` to load structural constraints.
+            3. Execute the requirements in the `backend` directory.
+            4. Run `pnpm run lint` and `pnpm run test`. Fix issues before proceeding.
+            5. Update `.agentic/STATE.md` marking the task as complete.
+            6. Use `gh pr create` to open a Pull Request referencing issue #${{ github.event.issue.number }}.
+          claude_args: >-
+            --model claude-3-7-sonnet-20250219
+            --max-turns 25
+            --allowedTools "Bash(pnpm run lint,pnpm run test,git checkout -b *,git add *,git commit *,git push *,gh pr create *),Read,Write,Edit,Glob,Grep"
