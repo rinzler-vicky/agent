@@ -2,12 +2,19 @@
   "name": "agent-monorepo",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "workspaces": [
     "backend",
     "frontend"
   ],
   "scripts": {
     "lint": "echo \"No lint targets configured yet\" && exit 0",
-    "test": "echo \"No test targets configured yet\" && exit 0"
+    "test": "echo \"No test targets configured yet\" && exit 0",
+    "prepare": "node -e \"process.env.CI || require('child_process').execSync('husky', {stdio: 'inherit'})\""
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.5.2",
+    "@commitlint/config-conventional": "^20.5.0",
+    "husky": "^9.1.7"
   }
 }
