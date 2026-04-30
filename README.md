@@ -91,11 +91,11 @@ Once the label is applied, the **Headless Claude Backend Dispatcher** (`.github/
 
 | Step | What the Agent Does |
 |------|---------------------|
-| 1 | Reads `/.agentic/STATE.md` to understand the current project phase and any blockers. |
-| 2 | Reads `/backend/ARCHITECTURE.md` to load immutable structural constraints (controller rules, ReBAC policy engine location, etc.). |
-| 3 | Implements the feature described in the issue inside the `/backend` directory, following NestJS dependency injection patterns. |
-| 4 | Runs `npm run lint` and `npm run test`. Fixes any issues before proceeding. |
-| 5 | Updates `/.agentic/STATE.md` to record what was built and mark the task complete. |
+| 1 | Reads `.agentic/STATE.md` to understand the current project phase and any blockers. |
+| 2 | Reads `backend/ARCHITECTURE.md` to load immutable structural constraints (controller rules, ReBAC policy engine location, etc.). |
+| 3 | Implements the feature described in the issue inside the `backend` directory, following NestJS dependency injection patterns. |
+| 4 | Runs `pnpm run lint` and `pnpm run test`. Fixes any issues before proceeding. |
+| 5 | Updates `.agentic/STATE.md` to record what was built and mark the task complete. |
 | 6 | Opens a Pull Request referencing the original issue. |
 
 You will receive a GitHub notification when the PR is opened.
@@ -104,7 +104,7 @@ You will receive a GitHub notification when the PR is opened.
 
 ## 5. The Autonomous Feedback Loop
 
-If the CI suite (`npm run lint` + `npm run test`) fails on the opened PR, the **Autonomous CI Feedback Loop** (`.github/workflows/autonomous-feedback.yml`) activates:
+If the CI suite (`pnpm run lint` + `pnpm run test`) fails on the opened PR, the **Autonomous CI Feedback Loop** (`.github/workflows/autonomous-feedback.yml`) activates:
 
 1. The full error trace (lint output + test output) is captured.
 2. Claude is dispatched again with the error trace as context.
@@ -121,9 +121,9 @@ Every PR — regardless of whether it was AI-generated or not — is reviewed by
 
 Gemini acts as a Principal Architect and audits the PR diff against:
 
-- `/backend/ARCHITECTURE.md` — NestJS structural rules and ReBAC policy constraints.
-- `/frontend/ARCHITECTURE.md` — Vue 3 + Vuetify component and state management rules.
-- `/.agentic/STATE.md` — Confirms the agent updated the project state.
+- `backend/ARCHITECTURE.md` — NestJS structural rules and ReBAC policy constraints.
+- `frontend/ARCHITECTURE.md` — Vue 3 + Vuetify component and state management rules.
+- `.agentic/STATE.md` — Confirms the agent updated the project state.
 
 Gemini posts a Markdown review comment on the PR identifying any architectural violations or approving the change. **This is the human review checkpoint** — read the Gemini report before merging.
 

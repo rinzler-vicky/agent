@@ -54,6 +54,12 @@ jobs:
           cat test_output.txt | tail -n 150 >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      - name: Configure Git Identity
+        if: steps.test_suite.outcome == 'failure'
+        run: |
+          git config user.name "claude-agent[bot]"
+          git config user.email "claude-agent[bot]@users.noreply.github.com"
+
       - name: Autonomous Remediation Dispatch
         if: steps.test_suite.outcome == 'failure'
         uses: anthropics/claude-code-action@v1
@@ -71,12 +77,12 @@ jobs:
             
             1. Verify your fix against the `ARCHITECTURE.md` constraints.
             2. Correct the failing files.
-            3. Run `pnpm run test` locally using Bash.
+            3. Run `pnpm run lint` and `pnpm run test` locally using Bash.
             4. Commit the resolution directly to the current branch using `git commit` and `git push`.
           claude_args: >-
             --model claude-3-7-sonnet-20250219
             --max-turns 20
-            --allowedTools "Bash(pnpm run test,git add *,git commit *,git push *),Read,Write,Edit,Glob,Grep"
+            --allowedTools "Bash(pnpm run lint,pnpm run test,git add *,git commit *,git push *),Read,Write,Edit,Glob,Grep"
 
       - name: Enforce Pipeline Failure
         if: steps.test_suite.outcome == 'failure'
