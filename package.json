@@ -5,8 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@10.33.2",
   "scripts": {
-    "lint": "echo \"No lint targets configured yet\" && exit 0",
-    "test": "echo \"No test targets configured yet\" && exit 0",
+    "lint": "pnpm -r --if-present run lint",
+    "test": "pnpm -r --if-present run test",
     "prepare": "husky"
   },
   "devDependencies": {
