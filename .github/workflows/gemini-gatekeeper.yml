@@ -1,0 +1,46 @@
+name: AI Gatekeeper - Structural Debt Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  structural-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Pull Request Diff
+        id: extract_diff
+        run: gh pr diff ${{ github.event.pull_request.number }} > pr_diff.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Execute Gemini Architectural Review
+        uses: google-github-actions/run-gemini-cli@v1
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          prompt: |
+            @backend/ARCHITECTURE.md 
+            @frontend/ARCHITECTURE.md 
+            @.agentic/STATE.md
+            
+            ROLE: Principal Architect. Analyze the pull request diff to prevent structural debt. Do not nitpick formatting. Audit purely for architectural compliance.
+            
+            DIFF DATA:
+            $(cat pr_diff.txt)
+            
+            EVALUATION CRITERIA:
+            1. Does this diff violate any constraint listed in the loaded ARCHITECTURE.md files?
+            2. Do backend changes correctly utilize the policy engine without bypassing security?
+            3. Was `STATE.md` successfully updated?
+            4. Does the code introduce tangled dependencies?
+            
+            OUTPUT PROTOCOL:
+            Output a Markdown report identifying exact files violating the architecture and suggest refactoring. If respected, output an approval message.
