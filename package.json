@@ -1,0 +1,13 @@
+{
+  "name": "agent-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "lint": "echo \"No lint targets configured yet\" && exit 0",
+    "test": "echo \"No test targets configured yet\" && exit 0"
+  }
+}

@@ -22,25 +22,54 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build Gemini Prompt
+        id: build_prompt
+        run: |
+          BACKEND_ARCH=$(cat backend/ARCHITECTURE.md 2>/dev/null || echo "(not found)")
+          FRONTEND_ARCH=$(cat frontend/ARCHITECTURE.md 2>/dev/null || echo "(not found)")
+          STATE=$(cat .agentic/STATE.md 2>/dev/null || echo "(not found)")
+          DIFF=$(cat pr_diff.txt)
+
+          # Write prompt to a temp file to avoid shell escaping issues
+          cat > /tmp/gemini_prompt.json <<ENDJSON
+          {
+            "contents": [{
+              "parts": [{
+                "text": "ROLE: Principal Architect. Analyze the pull request diff to prevent structural debt. Do not nitpick formatting. Audit purely for architectural compliance.\n\n## backend/ARCHITECTURE.md\n${BACKEND_ARCH}\n\n## frontend/ARCHITECTURE.md\n${FRONTEND_ARCH}\n\n## .agentic/STATE.md\n${STATE}\n\n## PR DIFF\n${DIFF}\n\n## EVALUATION CRITERIA\n1. Does this diff violate any constraint listed in the ARCHITECTURE.md files?\n2. Do backend changes correctly utilize the policy engine without bypassing security?\n3. Was STATE.md successfully updated?\n4. Does the code introduce tangled dependencies?\n\n## OUTPUT PROTOCOL\nOutput a Markdown report identifying exact files violating the architecture and suggest refactoring. If all rules are respected, output a clear approval message."
+              }]
+            }]
+          }
+          ENDJSON
+
       - name: Execute Gemini Architectural Review
-        uses: google-github-actions/run-gemini-cli@v1
-        with:
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          prompt: |
-            @backend/ARCHITECTURE.md 
-            @frontend/ARCHITECTURE.md 
-            @.agentic/STATE.md
-            
-            ROLE: Principal Architect. Analyze the pull request diff to prevent structural debt. Do not nitpick formatting. Audit purely for architectural compliance.
-            
-            DIFF DATA:
-            $(cat pr_diff.txt)
-            
-            EVALUATION CRITERIA:
-            1. Does this diff violate any constraint listed in the loaded ARCHITECTURE.md files?
-            2. Do backend changes correctly utilize the policy engine without bypassing security?
-            3. Was `STATE.md` successfully updated?
-            4. Does the code introduce tangled dependencies?
-            
-            OUTPUT PROTOCOL:
-            Output a Markdown report identifying exact files violating the architecture and suggest refactoring. If respected, output an approval message.
+        id: gemini_review
+        run: |
+          RESPONSE=$(curl -s \
+            -H "Content-Type: application/json" \
+            -d @/tmp/gemini_prompt.json \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${{ secrets.GEMINI_API_KEY }}")
+
+          # Extract the text field from the response
+          REVIEW=$(echo "$RESPONSE" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          try:
+              print(data['candidates'][0]['content']['parts'][0]['text'])
+          except (KeyError, IndexError):
+              print('Gemini API error or empty response.')
+              print(json.dumps(data, indent=2))
+          ")
+
+          # Save to file and output for the next step
+          echo "$REVIEW" > /tmp/gemini_review.md
+          echo "review_ready=true" >> $GITHUB_OUTPUT
+
+      - name: Post Review as PR Comment
+        if: steps.gemini_review.outputs.review_ready == 'true'
+        run: |
+          BODY=$(cat /tmp/gemini_review.md)
+          gh pr comment ${{ github.event.pull_request.number }} --body "## 🤖 AI Gatekeeper — Structural Debt Review
+
+${BODY}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
