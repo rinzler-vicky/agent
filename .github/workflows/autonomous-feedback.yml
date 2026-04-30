@@ -32,6 +32,7 @@ jobs:
         id: test_suite
         continue-on-error: true
         run: |
+          touch lint_output.txt test_output.txt
           set -e
           npm run lint > lint_output.txt 2>&1 || (echo "LINT_FAILED" && exit 1)
           npm run test > test_output.txt 2>&1 || (echo "TEST_FAILED" && exit 1)

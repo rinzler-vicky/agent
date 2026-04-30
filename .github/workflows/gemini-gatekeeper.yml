@@ -27,17 +27,10 @@ jobs:
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           prompt: |
-            ## backend/ARCHITECTURE.md
-            $(cat backend/ARCHITECTURE.md)
-
-            ## frontend/ARCHITECTURE.md
-            $(cat frontend/ARCHITECTURE.md)
-
-            ## .agentic/STATE.md
-            $(cat .agentic/STATE.md)
-
-            ## PR DIFF
-            $(cat pr_diff.txt)
+            @backend/ARCHITECTURE.md
+            @frontend/ARCHITECTURE.md
+            @.agentic/STATE.md
+            @pr_diff.txt
 
             ROLE: Principal Architect. Analyze the pull request diff to prevent structural debt. Do not nitpick formatting. Audit purely for architectural compliance.
 
