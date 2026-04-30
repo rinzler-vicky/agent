@@ -147,7 +147,7 @@ Agents have no persistent memory between runs. These disk-backed files act as th
 
 > **Important:** Do not delete or rename these files. They are the only mechanism by which agents understand prior decisions.
 
-When a task is completed, `/.agentic/STATE.md` is automatically updated by the agent. You can read it at any time to understand the current project state without opening the codebase.
+When a task is completed, `.agentic/STATE.md` is automatically updated by the agent. You can read it at any time to understand the current project state without opening the codebase.
 
 ---
 
@@ -155,17 +155,17 @@ When a task is completed, `/.agentic/STATE.md` is automatically updated by the a
 
 These are enforced by the AI Gatekeeper on every PR and baked into the agent's context. They cannot be bypassed.
 
-### Backend (`/backend`)
+### Backend (`backend`)
 - **Controllers** handle HTTP routing, DTO validation, and response formatting only. No business logic.
 - **Services** own all business logic and database interaction.
 - **Direct database queries from controllers are forbidden.**
-- **Authorization** is handled exclusively by the ReBAC engine (Oso/Cerbos) in `/backend/src/auth/`. No module may bypass it to make access decisions.
+- **Authorization** is handled exclusively by the ReBAC engine (Oso/Cerbos) in `backend/src/auth/`. No module may bypass it to make access decisions.
 - Every new endpoint must have a policy defined, the resource registered, and the controller decorated with the ReBAC check.
 - Unit tests must prove unauthorized access is rejected.
 
-### Frontend (`/frontend`)
+### Frontend (`frontend`)
 - All components use Vue 3 `<script setup>` syntax. Options API is forbidden.
-- Shared state lives in Pinia stores at `/frontend/src/stores/`.
+- Shared state lives in Pinia stores at `frontend/src/stores/`.
 - Vuetify 3 components and utility classes must be used before any custom CSS is written.
 - All API calls are encapsulated in composables or Pinia store actions. Components must not call APIs directly.
 - Navigation uses Vue Router only.
@@ -228,3 +228,4 @@ Configure these in your repository's **Settings → Secrets and variables → Ac
 - [ ] Open a GitHub Issue describing the first module to build (see [Section 2](#2-your-only-job-writing-a-good-issue)).
 - [ ] Apply the label `route: claude-backend` to the issue.
 - [ ] Wait for the agent to open a PR, then read the AI gatekeeper report before merging.
+

@@ -7,6 +7,6 @@ This file defines the immutable constraints for the backend domain. Reference it
 * **Data Access:** Direct database queries from controllers are strictly forbidden.
 
 ## Authorization Engine Constraints (ReBAC)
-The backend utilizes a granular Role and Resource-Based Access Control (ReBAC) engine powered by Oso/Cerbos. The policy engine is isolated in `/backend/src/auth/`. No other module may directly query user roles from the database to make authorization decisions.
+The backend utilizes a granular Role and Resource-Based Access Control (ReBAC) engine powered by Oso/Cerbos. The policy engine is isolated in `backend/src/auth/`. No other module may directly query user roles from the database to make authorization decisions.
 
 When creating a new entity or endpoint, you must define the specific action policy, register the resource, and decorate the controller endpoint to enforce the ReBAC check. Write comprehensive unit tests proving unauthorized access is rejected.

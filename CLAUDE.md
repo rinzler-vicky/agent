@@ -13,5 +13,5 @@ You are operating as a headless autonomous worker in a strict NestJS and Vue 3 m
 * Do not load frontend context when executing backend tasks, and vice versa.
 
 ## Tool Usage
-* Run `pnpm run lint` and `pnpm run test` after every modification within the respective directory.
+* Run `pnpm run lint` and `pnpm run test` from the repository root after every modification.
 * Never output speculative code without verifying the existing ReBAC authorization engine interface.

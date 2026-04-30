@@ -3,9 +3,9 @@ This file defines the immutable constraints for the frontend domain. Reference i
 
 ## Structural Boundaries
 * **Components:** Must use Vue 3 `<script setup>` syntax exclusively. Options API is strictly forbidden.
-* **State Management:** All shared state must be managed via Pinia stores located in `/frontend/src/stores/`.
+* **State Management:** All shared state must be managed via Pinia stores located in `frontend/src/stores/`.
 * **UI Components:** Utilize Vuetify 3 components. Do not invent custom CSS when a Vuetify utility class or component exists.
-* **Composables:** Reusable logic must be extracted into composables located in `/frontend/src/composables/`.
+* **Composables:** Reusable logic must be extracted into composables located in `frontend/src/composables/`.
 
 ## API Integration Constraints
 * Backend API contracts are immutable from the frontend perspective. Do not modify backend code to accommodate frontend needs.
