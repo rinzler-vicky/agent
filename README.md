@@ -117,15 +117,19 @@ This loop means **a failing build is self-healing** — you do not need to inter
 
 ## 6. The AI Gatekeeper (Structural Review)
 
-Every PR — regardless of whether it was AI-generated or not — is reviewed by the **AI Gatekeeper** (`.github/workflows/gemini-gatekeeper.yml`) using Gemini.
+Every PR — regardless of whether it was AI-generated or not — is reviewed by the **AI Gatekeeper** (`.github/workflows/gemini-gatekeeper.yml`).
 
-Gemini acts as a Principal Architect and audits the PR diff against:
+The workflow automatically selects an AI reviewer based on available credentials:
+- **Gemini** (preferred if `GEMINI_API_KEY` is configured)
+- **Claude** (fallback if only `ANTHROPIC_API_KEY` is available)
+
+The AI reviewer acts as a Principal Architect and audits the PR diff against:
 
 - `backend/ARCHITECTURE.md` — NestJS structural rules and ReBAC policy constraints.
 - `frontend/ARCHITECTURE.md` — Vue 3 + Vuetify component and state management rules.
 - `.agentic/STATE.md` — Confirms the agent updated the project state.
 
-Gemini posts a Markdown review comment on the PR identifying any architectural violations or approving the change. **This is the human review checkpoint** — read the Gemini report before merging.
+The AI posts a Markdown review comment on the PR identifying any architectural violations or approving the change. **This is the human review checkpoint** — read the AI report before merging.
 
 ---
 
@@ -193,12 +197,16 @@ These are enforced by the AI Gatekeeper on every PR and baked into the agent's c
 
 Configure these in your repository's **Settings → Secrets and variables → Actions**:
 
-| Secret | Description |
-|--------|-------------|
-| `ANTHROPIC_API_KEY` | API key for Claude (powers the backend agent and self-healing loop). |
-| `GEMINI_API_KEY` | API key for Gemini (powers the AI Gatekeeper structural review). |
+| Secret | Required? | Description | How to Obtain |
+|--------|-----------|-------------|---------------|
+| `ANTHROPIC_API_KEY` | **YES** | API key for Claude (powers the backend agent, self-healing loop, and AI Gatekeeper fallback). | [Get API key from Anthropic Console](https://console.anthropic.com/settings/keys) |
+| `GEMINI_API_KEY` | Optional | API key for Gemini (preferred AI Gatekeeper reviewer). | [Get API key from Google AI Studio](https://aistudio.google.com/app/apikey) |
 
-Without these secrets, the workflows will fail immediately. No code will be generated.
+**Minimum requirement:** You must set `ANTHROPIC_API_KEY` for the system to function.
+
+**For AI Gatekeeper:** The workflow will use Gemini if `GEMINI_API_KEY` is set, otherwise it falls back to Claude using `ANTHROPIC_API_KEY`.
+
+> **Note:** `GEMINI_API_KEY` is for Google AI Studio's free/paid tier. If you have a Google Cloud subscription and want to use Vertex AI instead, you'll need to modify the workflow to use service account authentication. See [Google's Vertex AI authentication docs](https://cloud.google.com/vertex-ai/docs/authentication) for details.
 
 ---
 
@@ -214,9 +222,9 @@ Without these secrets, the workflows will fail immediately. No code will be gene
 
 ## Quick-Start Checklist
 
-- [ ] Add `ANTHROPIC_API_KEY` secret to the repository.
-- [ ] Add `GEMINI_API_KEY` secret to the repository.
+- [ ] Add `ANTHROPIC_API_KEY` secret to the repository (required).
+- [ ] *(Optional)* Add `GEMINI_API_KEY` secret for Gemini-powered reviews.
 - [ ] Create the label `route: claude-backend` in the repository Labels page.
 - [ ] Open a GitHub Issue describing the first module to build (see [Section 2](#2-your-only-job-writing-a-good-issue)).
 - [ ] Apply the label `route: claude-backend` to the issue.
-- [ ] Wait for the agent to open a PR, then read the Gemini gatekeeper report before merging.
+- [ ] Wait for the agent to open a PR, then read the AI gatekeeper report before merging.
