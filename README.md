@@ -139,11 +139,11 @@ Agents have no persistent memory between runs. These disk-backed files act as th
 
 | File | Purpose |
 |------|---------|
-| `/.agentic/STATE.md` | **Hot memory.** Tracks current phase, decisions made, and pending tasks. Read and updated by every agent run. |
-| `/CLAUDE.md` | **Root protocol.** Tells Claude which domain files to load and enforces context boundaries. |
-| `/.github/copilot-instructions.md` | **Copilot rules.** Restricts GitHub Copilot Workspace to Vue 3 + Vuetify conventions for frontend PRs. |
-| `/backend/ARCHITECTURE.md` | **Backend cold constraints.** Immutable NestJS rules; the agent must never violate these. |
-| `/frontend/ARCHITECTURE.md` | **Frontend cold constraints.** Immutable Vue 3 rules; the agent must never violate these. |
+| `.agentic/STATE.md` | **Hot memory.** Tracks current phase, decisions made, and pending tasks. Read and updated by every agent run. |
+| `CLAUDE.md` | **Root protocol.** Tells Claude which domain files to load and enforces context boundaries. |
+| `.github/copilot-instructions.md` | **Copilot rules.** Restricts GitHub Copilot Workspace to Vue 3 + Vuetify conventions for frontend PRs. |
+| `backend/ARCHITECTURE.md` | **Backend cold constraints.** Immutable NestJS rules; the agent must never violate these. |
+| `frontend/ARCHITECTURE.md` | **Frontend cold constraints.** Immutable Vue 3 rules; the agent must never violate these. |
 
 > **Important:** Do not delete or rename these files. They are the only mechanism by which agents understand prior decisions.
 
