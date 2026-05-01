@@ -36,8 +36,9 @@ export class TenantMiddleware implements NestMiddleware {
       }
     }
 
-    // Also accept explicit tenant header (for multi-tenant API keys)
-    if (!req.tenantId && req.headers['x-tenant-id']) {
+    // Also accept explicit tenant header only when processing API key auth (x-api-key present)
+    // Trusting x-tenant-id from unauthenticated requests would allow cross-tenant access
+    if (!req.tenantId && req.headers['x-tenant-id'] && req.headers['x-api-key']) {
       req.tenantId = req.headers['x-tenant-id'] as string;
     }
 

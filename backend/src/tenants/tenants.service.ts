@@ -64,7 +64,7 @@ export class TenantsService {
 
     if (data.displayName !== undefined) { sets.push(`display_name = $${idx++}`); values.push(data.displayName); }
     if (data.plan !== undefined) { sets.push(`plan = $${idx++}`); values.push(data.plan); }
-    if (data.config !== undefined) { sets.push(`config = $${idx++}`); values.push(JSON.stringify(data.config)); }
+    if (data.config !== undefined) { sets.push(`config = $${idx++}`); values.push(data.config); }
     sets.push(`updated_at = now()`);
     values.push(id);
 
