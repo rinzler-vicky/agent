@@ -64,7 +64,7 @@ export class AuditService {
     const offset = filters.offset ?? 0;
 
     const result = await this.pool.query(
-      `SELECT * FROM audit_events ${where} ORDER BY occurred_at DESC LIMIT $${idx++} OFFSET $${idx}`,
+      `SELECT * FROM audit_events ${where} ORDER BY occurred_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
       [...values, limit, offset],
     );
     return result.rows;

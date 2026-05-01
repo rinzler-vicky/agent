@@ -26,8 +26,10 @@ export class TenantsService {
         [data.slug, data.displayName, data.plan ?? 'free'],
       );
       return result.rows[0];
-    } catch (err: any) {
-      if (err.code === '23505') throw new ConflictException(`Tenant slug '${data.slug}' already exists`);
+    } catch (err: unknown) {
+      if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+        throw new ConflictException(`Tenant slug '${data.slug}' already exists`);
+      }
       throw err;
     }
   }

@@ -24,8 +24,9 @@ async function run() {
     `);
 
     if (direction === 'up') {
+      // Up migrations: any .sql file that does NOT end with '_down.sql'
       const files = fs.readdirSync(migrationsDir)
-        .filter(f => f.endsWith('.sql') && !f.startsWith('006_'))
+        .filter(f => f.endsWith('.sql') && !f.endsWith('_down.sql'))
         .sort();
 
       for (const file of files) {
@@ -44,7 +45,7 @@ async function run() {
       }
     } else if (direction === 'down') {
       console.log('  ▼  Running down migration...');
-      const sql = fs.readFileSync(path.join(migrationsDir, '006_down.sql'), 'utf8');
+      const sql = fs.readFileSync(path.join(migrationsDir, '006_rollback_down.sql'), 'utf8');
       await client.query(sql);
       await client.query('DELETE FROM schema_migrations');
       console.log('  ✓  Down migration complete');

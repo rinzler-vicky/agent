@@ -16,7 +16,11 @@ export const DATABASE_POOL = 'DATABASE_POOL';
           max: config.get<number>('DB_POOL_MAX', 10),
           idleTimeoutMillis: 30000,
           connectionTimeoutMillis: 5000,
-          ssl: config.get<string>('DATABASE_SSL') === 'true' ? { rejectUnauthorized: false } : false,
+          // DATABASE_SSL_REJECT_UNAUTHORIZED defaults to true (validates the cert).
+          // Set to 'false' only for Neon/Supabase which use self-signed certs on pooler endpoints.
+          ssl: config.get<string>('DATABASE_SSL') === 'true'
+            ? { rejectUnauthorized: config.get<string>('DATABASE_SSL_REJECT_UNAUTHORIZED', 'true') !== 'false' }
+            : false,
         });
       },
     },
