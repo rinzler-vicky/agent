@@ -1,7 +1,7 @@
 name: Commitlint — Enforce Commit Message Format
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
     branches: [main]
 
 permissions:
@@ -11,6 +11,7 @@ permissions:
 jobs:
   commitlint:
     runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4

@@ -1,7 +1,7 @@
 name: AI Gatekeeper - Structural Debt Review
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review]
 
 permissions:
   contents: read
@@ -10,6 +10,7 @@ permissions:
 jobs:
   structural-audit:
     runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
