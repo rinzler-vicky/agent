@@ -11,6 +11,7 @@ Build only from an approved issue plan. Do not freestyle architecture, folder st
 Every meaningful change must pass through these gates:
 
 1. Intake
+   - Read `.agentic/STATE.md` (hot memory) to understand current project state, active domain, and pending tasks.
    - Read the parent issue, linked child issues, existing ADRs, README, package files, test config, and relevant source paths.
    - Restate the goal, non-goals, affected surfaces, risks, and assumptions.
    - Identify whether the task is backend, frontend, full-stack, infra, bug, research, or self-evolution.
@@ -42,6 +43,7 @@ Every meaningful change must pass through these gates:
 7. Documentation
    - Update README, docs, ADRs, examples, env docs, API docs, schema docs, and prompt/workflow docs when behavior changes.
    - Add a brief "Learnings / Trial and Error" note to the issue or PR for agent continuity.
+   - Update `.agentic/STATE.md` with current phase, active domain, decisions made, and pending tasks before opening a PR.
 
 8. PR
    - The PR body must include: parent issue, phase, summary, changed surfaces, validation evidence, screenshots/logs where relevant, risks, rollback plan, and follow-up issues.

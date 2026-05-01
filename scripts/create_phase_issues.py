@@ -18,6 +18,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -90,7 +91,16 @@ def main() -> int:
 
     plan_path = Path(sys.argv[1])
     repo = sys.argv[2]
-    plan = json.loads(plan_path.read_text())
+
+    if not plan_path.exists():
+        raise SystemExit(f"Error: Plan file not found: {plan_path}")
+    if not plan_path.is_file():
+        raise SystemExit(f"Error: Path is not a file: {plan_path}")
+
+    try:
+        plan = json.loads(plan_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Error: Invalid JSON in {plan_path}: {exc}") from exc
 
     parent_issue = plan["parent_issue"]
     for phase in plan["phases"]:
@@ -98,11 +108,20 @@ def main() -> int:
         title = f"[{prefix}][Phase {phase['number']}]: {phase['title']}"
         labels = ",".join(phase.get("labels", []))
         body = body_for_phase(parent_issue, phase)
-        cmd = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body]
-        if labels:
-            cmd.extend(["--label", labels])
-        print(f"Creating: {title}")
-        subprocess.run(cmd, check=True)
+
+        # Write body to a temp file to avoid OS command-line length limits
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
+            tmp.write(body)
+            tmp_path = Path(tmp.name)
+
+        try:
+            cmd = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body-file", str(tmp_path)]
+            if labels:
+                cmd.extend(["--label", labels])
+            print(f"Creating: {title}")
+            subprocess.run(cmd, check=True)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     return 0
 
