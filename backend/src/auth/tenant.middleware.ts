@@ -2,6 +2,7 @@ import { Injectable, NestMiddleware } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { JwtPayload } from './auth.service';
 
 declare global {
   namespace Express {
@@ -27,7 +28,7 @@ export class TenantMiddleware implements NestMiddleware {
         const token = authHeader.slice(7);
         const payload = this.jwtService.verify(token, {
           secret: this.config.get<string>('JWT_SECRET', 'change-me-in-production'),
-        }) as any;
+        }) as JwtPayload;
         req.tenantId = payload.tenantId;
         req.userId = payload.sub;
       } catch {

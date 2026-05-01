@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { IsString, IsNumber, IsPositive } from 'class-validator';
 import { StorageService } from './storage.service';
@@ -25,10 +25,11 @@ export class StorageController {
 
   @Post('upload-url')
   @ApiOperation({ summary: 'Generate a pre-signed upload URL' })
-  generateUploadUrl(@Body() dto: GenerateUploadUrlDto, req: any) {
-    return this.storageService.generateUploadUrl({
-      tenantId: req.tenantId ?? 'unknown',
-      ...dto,
-    });
+  generateUploadUrl(@Body() dto: GenerateUploadUrlDto, @Request() req: any) {
+    const tenantId = req.tenantId;
+    if (!tenantId) {
+      throw new Error('Missing tenantId — ensure JWT or x-tenant-id header is set');
+    }
+    return this.storageService.generateUploadUrl({ tenantId, ...dto });
   }
 }
