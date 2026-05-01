@@ -1,0 +1,110 @@
+name: "00 — Master Goal / Agentic Epic"
+description: "Create a primary issue that agents must decompose into phased child issues."
+title: "[Goal]: "
+labels: ["type:master-goal", "status:intake", "needs:breakdown"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this issue as the single source of truth for a multi-phase goal. Agents must create a research-backed plan and child issues before implementation.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user/business/developer problem are we solving?
+      placeholder: "We need... because..."
+    validations:
+      required: true
+  - type: textarea
+    id: desired_outcome
+    attributes:
+      label: Desired outcome
+      description: What should be true when this goal is complete?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      value: |
+        In scope:
+        - 
+
+        Out of scope:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and preferences
+      description: Include stack constraints, budget, DB, workflow engine, API limits, security, compliance, deployment, or performance constraints.
+      value: |
+        Required:
+        - 
+
+        Preferred:
+        - 
+
+        Avoid:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: current_context
+    attributes:
+      label: Current repo/product context
+      description: Link relevant files, docs, PRs, issues, diagrams, screenshots, or prior decisions.
+    validations:
+      required: false
+  - type: textarea
+    id: research_questions
+    attributes:
+      label: Research questions for the agent
+      value: |
+        - What existing repo patterns already solve part of this?
+        - What official docs or primary sources must be checked?
+        - What market/popular-repo patterns are relevant?
+        - What are the architecture options and tradeoffs?
+    validations:
+      required: true
+  - type: textarea
+    id: phase_expectations
+    attributes:
+      label: Required phase structure
+      value: |
+        The agent must produce child issues with this structure for each phase:
+        - Goal
+        - Tasks
+        - Subtasks
+        - Acceptance criteria
+        - QA plan
+        - Risks
+        - Learnings
+        - Trial/errors
+        - Outcome
+        - Rollback/follow-up notes
+    validations:
+      required: true
+  - type: dropdown
+    id: confirmation_gate
+    attributes:
+      label: Architecture confirmation required before implementation?
+      options:
+        - "Yes — agent must research and wait for human approval"
+        - "No — implementation can begin after issue breakdown"
+    validations:
+      required: true
+  - type: checkboxes
+    id: governance
+    attributes:
+      label: Governance checklist
+      options:
+        - label: "Agent must not implement until child issues are created."
+          required: true
+        - label: "Agent must document research, architecture options, and rejected alternatives."
+          required: true
+        - label: "Agent must create or update ADRs for architecture decisions."
+          required: true
+        - label: "Agent must record QA evidence and outcomes for every phase."
+          required: true

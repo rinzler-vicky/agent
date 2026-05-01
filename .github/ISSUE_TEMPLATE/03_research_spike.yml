@@ -1,0 +1,71 @@
+name: "03 — Research / Architecture Spike"
+description: "Research market, official docs, repo patterns, architecture options, and tradeoffs."
+title: "[Research]: "
+labels: ["type:research", "status:intake", "needs:decision"]
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: Parent issue
+      placeholder: "#123 or N/A"
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Research question
+      description: What decision are we trying to make?
+    validations:
+      required: true
+  - type: textarea
+    id: sources_required
+    attributes:
+      label: Required source types
+      value: |
+        - [ ] Current repository code/docs
+        - [ ] Official documentation
+        - [ ] Primary source / project repo
+        - [ ] Popular GitHub repos or examples
+        - [ ] Benchmarks/security notes where relevant
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options to compare
+      value: |
+        Option A:
+        Option B:
+        Option C:
+    validations:
+      required: false
+  - type: textarea
+    id: decision_matrix
+    attributes:
+      label: Decision matrix
+      value: |
+        Criteria:
+        - Fit with existing architecture
+        - Operability
+        - Cost
+        - Security
+        - Developer experience
+        - Testability
+        - Migration/rollback risk
+
+        Findings:
+        | Option | Pros | Cons | Risks | Evidence |
+        | --- | --- | --- | --- | --- |
+    validations:
+      required: true
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation
+      value: |
+        Recommended option:
+        Why:
+        Rejected alternatives:
+        Human confirmation needed:
+    validations:
+      required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Start with a Master Goal
+    url: https://github.com/rinzler-vicky/agent/issues/new?template=00_master_goal.yml
+    about: Use this for any feature, product, architecture, or multi-phase initiative.

@@ -1,0 +1,104 @@
+name: "02 — Frontend Feature Phase"
+description: "Frontend/UI/UX phase issue."
+title: "[Frontend][Phase N]: "
+labels: ["type:frontend", "status:planned", "phase"]
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: Parent master goal
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: phase_goal
+    attributes:
+      label: Phase goal
+    validations:
+      required: true
+  - type: textarea
+    id: ux_contract
+    attributes:
+      label: UX contract / approved design
+      value: |
+        User stories:
+        - 
+        States:
+        - Loading:
+        - Empty:
+        - Error:
+        - Success:
+        - Permission denied:
+        Responsive behavior:
+        - 
+        Accessibility requirements:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: data_contract
+    attributes:
+      label: Data/API contract
+      description: Link backend issue/API docs/types or define expected shape.
+    validations:
+      required: true
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Tasks and subtasks
+      value: |
+        - [ ] Task 1
+          - [ ] Subtask
+        - [ ] Task 2
+          - [ ] Subtask
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] UI satisfies the approved user stories.
+        - [ ] Loading/empty/error/success/permission states are implemented.
+        - [ ] Keyboard and screen-reader behavior is acceptable.
+        - [ ] Component tests cover major state transitions.
+        - [ ] E2E or integration test covers critical user flow.
+        - [ ] Visual evidence is attached to PR.
+    validations:
+      required: true
+  - type: textarea
+    id: qa
+    attributes:
+      label: QA and validation plan
+      value: |
+        Required checks:
+        - [ ] Unit/component tests
+        - [ ] E2E tests for critical flow
+        - [ ] Lint/typecheck/format
+        - [ ] Build
+        - [ ] Accessibility smoke check
+        Manual QA:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: learnings
+    attributes:
+      label: Learnings / trial and error log
+      value: |
+        - Attempt:
+          Result:
+          Learning:
+    validations:
+      required: false
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      value: |
+        Completed:
+        Deferred:
+        Follow-up issues:
+        Rollback notes:
+    validations:
+      required: false

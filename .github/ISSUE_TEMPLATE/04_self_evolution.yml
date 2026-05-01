@@ -1,0 +1,65 @@
+name: "04 — Repository Self-Evolution"
+description: "Change prompts, agent rules, workflow templates, issue forms, or governance."
+title: "[Self-Evolution]: "
+labels: ["type:self-evolution", "status:intake", "needs:approval"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem with current agent/repo process
+      description: What did the current structure fail to enforce or enable?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_change
+    attributes:
+      label: Proposed change
+      description: Which instructions, prompts, templates, workflows, labels, scripts, or docs should change?
+      value: |
+        Files to change:
+        - 
+        Behavior before:
+        - 
+        Behavior after:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and examples
+      description: Link issues, PRs, failed agent runs, confusion, repeated mistakes, or missing checks.
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risks and rollback
+      value: |
+        Risks:
+        - 
+        Rollback plan:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Validation plan
+      value: |
+        - [ ] Dry-run a master goal breakdown.
+        - [ ] Dry-run backend and frontend phase issues.
+        - [ ] Verify templates render correctly in GitHub.
+        - [ ] Verify agents still receive compatible instructions.
+        - [ ] Update docs/changelog.
+    validations:
+      required: true
+  - type: checkboxes
+    id: approval
+    attributes:
+      label: Approval gate
+      options:
+        - label: "This change requires maintainer approval before merge."
+          required: true
+        - label: "The PR must include before/after examples."
+          required: true

@@ -1,0 +1,76 @@
+name: "05 — Bug / Regression"
+description: "Report and fix a bug with reproduction, root cause, and regression tests."
+title: "[Bug]: "
+labels: ["type:bug", "status:intake"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Affected surfaces
+      value: |
+        Backend:
+        Frontend:
+        Database:
+        Workflow/agent:
+        External integration:
+    validations:
+      required: false
+  - type: textarea
+    id: root_cause
+    attributes:
+      label: Root cause hypothesis
+      description: Agent must update after investigation.
+      value: |
+        Initial hypothesis:
+        Confirmed root cause:
+    validations:
+      required: false
+  - type: textarea
+    id: fix_plan
+    attributes:
+      label: Fix plan
+      value: |
+        - [ ] Add failing regression test.
+        - [ ] Implement smallest safe fix.
+        - [ ] Run relevant checks.
+        - [ ] Document any follow-up.
+    validations:
+      required: true
+  - type: textarea
+    id: qa
+    attributes:
+      label: QA evidence required
+      value: |
+        - [ ] Regression test fails before fix and passes after fix.
+        - [ ] Relevant unit/integration/e2e checks pass.
+        - [ ] No unrelated behavior changed.
+    validations:
+      required: true

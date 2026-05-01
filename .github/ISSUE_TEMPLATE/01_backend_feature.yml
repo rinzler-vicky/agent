@@ -1,0 +1,108 @@
+name: "01 — Backend Feature Phase"
+description: "Backend/API/data/workflow phase issue."
+title: "[Backend][Phase N]: "
+labels: ["type:backend", "status:planned", "phase"]
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: Parent master goal
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
+    id: phase_goal
+    attributes:
+      label: Phase goal
+      description: What this backend phase must accomplish.
+    validations:
+      required: true
+  - type: textarea
+    id: architecture
+    attributes:
+      label: Approved architecture / ADR link
+      description: Link ADR or summarize approved design. If not approved, this issue is not ready.
+      placeholder: "ADR-0001 or N/A with reason"
+    validations:
+      required: true
+  - type: textarea
+    id: surfaces
+    attributes:
+      label: Affected backend surfaces
+      value: |
+        APIs/routes:
+        - 
+        Services/domain modules:
+        - 
+        Database/migrations:
+        - 
+        Workflows/jobs/queues:
+        - 
+        External integrations/adapters:
+        - 
+        Observability/security/config:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Tasks and subtasks
+      value: |
+        - [ ] Task 1
+          - [ ] Subtask
+        - [ ] Task 2
+          - [ ] Subtask
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] API contract is documented and tested.
+        - [ ] Inputs are validated and errors are deterministic.
+        - [ ] Database migrations are reversible or have a rollback note.
+        - [ ] Workflow/job behavior is idempotent and retry-safe where applicable.
+        - [ ] Security and permission behavior is covered.
+    validations:
+      required: true
+  - type: textarea
+    id: qa
+    attributes:
+      label: QA and validation plan
+      value: |
+        Required checks:
+        - [ ] Unit tests
+        - [ ] Integration tests
+        - [ ] API contract tests
+        - [ ] Migration up/down or rollback verification
+        - [ ] Lint/typecheck/format
+        - [ ] Build
+        Manual QA:
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: learnings
+    attributes:
+      label: Learnings / trial and error log
+      description: Agents must update this as work proceeds.
+      value: |
+        - Attempt:
+          Result:
+          Learning:
+    validations:
+      required: false
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: Filled at phase completion.
+      value: |
+        Completed:
+        Deferred:
+        Follow-up issues:
+        Rollback notes:
+    validations:
+      required: false
