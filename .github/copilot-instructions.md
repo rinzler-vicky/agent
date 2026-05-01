@@ -1,13 +1,29 @@
-# COPILOT WORKSPACE DRAFTING PROTOCOL
-You are operating within a NestJS and Vue 3 + Vuetify monorepo. Your primary objective is to draft precise Pull Requests based on GitHub Issues.
+# GitHub Copilot Repository Instructions
 
-## Constraint Verification
-* Search the codebase for existing patterns using directory prefixes (e.g., `query path:frontend/src/composables`).
-* Read `.agentic/STATE.md` to ensure drafted changes align with the current strategic phase.
-* Verify that all frontend components adhere strictly to the Vuetify 3 component standard as established in `frontend/ARCHITECTURE.md`.
+Follow `AGENTS.md` first. This repository uses issues as executable specifications. Do not implement beyond the issue scope.
 
-## Output Requirements
-* Always utilize the Vue 3 `<script setup>` syntax.
-* State must be managed via Pinia.
-* Do not invent custom CSS if a Vuetify utility class exists.
-* Restrict modifications to the `frontend` directory. Assume backend API contracts are immutable.
+## Mandatory behavior
+
+- Read the parent issue and all linked child issues before coding.
+- Confirm whether the issue is in Discovery, Architecture Review, Implementation, QA, or Done.
+- If architecture is not approved for a new feature, schema change, workflow change, integration, auth/security change, or dependency addition, produce a plan and stop.
+- Keep changes minimal and phase-scoped.
+- Run and report relevant checks. Never say a check passed unless you ran it.
+- Update docs, tests, and decision records when behavior changes.
+- Record trial/errors and learnings in the PR body.
+
+## Preferred response structure for coding tasks
+
+1. Understanding
+2. Repo observations
+3. Plan
+4. Implementation summary
+5. Validation performed
+6. Risks and follow-ups
+
+## Prohibited
+
+- No hidden prompt/workflow changes.
+- No broad rewrites without approval.
+- No new dependencies without justification and approval.
+- No generated secrets or placeholder production credentials.

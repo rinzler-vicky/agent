@@ -1,0 +1,31 @@
+{
+  "parent_issue": "#123",
+  "goal": "Build configurable agentic workflow backend with human-approved architecture gates.",
+  "non_goals": ["Do not build the final UI in this phase"],
+  "assumptions": ["Repository has a TypeScript backend"],
+  "unknowns": ["Workflow engine choice requires confirmation"],
+  "architecture_confirmation_required": true,
+  "recommended_architecture": "Use database-backed workflow definitions with versioned execution state and external integration adapters.",
+  "adr_required": true,
+  "phases": [
+    {
+      "number": 0,
+      "title": "Discovery and architecture confirmation",
+      "type": "research",
+      "goal": "Inspect repo, compare architecture options, and create ADR.",
+      "tasks": [
+        { "title": "Repo discovery", "subtasks": ["Map current backend", "Map current tests", "Map deployment assumptions"] },
+        { "title": "Architecture research", "subtasks": ["Compare DB-backed workflow model", "Compare n8n/Composio integration", "Document tradeoffs"] }
+      ],
+      "acceptance_criteria": ["ADR draft exists", "Human maintainer confirms architecture"],
+      "qa_plan": ["No code changes", "Decision matrix reviewed"],
+      "risks": ["Wrong abstraction may lock repo into one workflow engine"],
+      "learnings": [],
+      "trial_errors": [],
+      "outcome": "Pending",
+      "status_gate": "Human approval required before Phase 1",
+      "depends_on": [],
+      "labels": ["type:research", "phase", "needs:decision"]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+name: Agent Issue Policy
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  policy-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment with required next step for master goals
+        if: contains(github.event.issue.labels.*.name, 'type:master-goal') && contains(github.event.issue.labels.*.name, 'needs:breakdown')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## Agent next step required
+
+            This master goal must be broken into phase issues before implementation.
+
+            Use the prompt in \`.github/prompts/breakdown-master-goal.prompt.md\`.
+
+            Required gates:
+            - Phase 0 research / architecture decision
+            - Human architecture confirmation when architecture-sensitive
+            - Child issues with tasks, subtasks, acceptance criteria, QA, learnings, trial/errors, and outcomes
+            - ADR for durable architecture decisions
+
+            Agents must not implement from this master issue directly.`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

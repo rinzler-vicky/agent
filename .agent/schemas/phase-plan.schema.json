@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agentic Phase Plan",
+  "type": "object",
+  "required": ["parent_issue", "goal", "architecture_confirmation_required", "phases"],
+  "properties": {
+    "parent_issue": { "type": "string" },
+    "goal": { "type": "string" },
+    "non_goals": { "type": "array", "items": { "type": "string" } },
+    "assumptions": { "type": "array", "items": { "type": "string" } },
+    "unknowns": { "type": "array", "items": { "type": "string" } },
+    "architecture_confirmation_required": { "type": "boolean" },
+    "recommended_architecture": { "type": "string" },
+    "adr_required": { "type": "boolean" },
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["number", "title", "type", "goal", "tasks", "acceptance_criteria", "qa_plan", "status_gate"],
+        "properties": {
+          "number": { "type": "integer", "minimum": 0 },
+          "title": { "type": "string" },
+          "type": { "enum": ["research", "backend", "frontend", "fullstack", "infra", "qa", "docs", "self-evolution"] },
+          "goal": { "type": "string" },
+          "tasks": { "type": "array", "items": { "$ref": "#/$defs/task" } },
+          "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+          "qa_plan": { "type": "array", "items": { "type": "string" } },
+          "risks": { "type": "array", "items": { "type": "string" } },
+          "learnings": { "type": "array", "items": { "type": "string" } },
+          "trial_errors": { "type": "array", "items": { "type": "string" } },
+          "outcome": { "type": "string" },
+          "status_gate": { "type": "string" },
+          "depends_on": { "type": "array", "items": { "type": "integer" } },
+          "labels": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "task": {
+      "type": "object",
+      "required": ["title", "subtasks"],
+      "properties": {
+        "title": { "type": "string" },
+        "subtasks": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
