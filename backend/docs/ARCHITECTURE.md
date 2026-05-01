@@ -47,7 +47,7 @@ This document defines the architecture for a backend-only agentic system that wo
 - Sandbox/workbench support
 - Dynamic tool discovery
 
-### Future Execution Engines (Phase 2+)
+### Future Execution Engines (Phase 9, Optional)
 - **LangGraph**: For durable subflow runtime with checkpoints and long-term memory
 - **Temporal**: For ultra-durable, long-running, failure-sensitive workflows
 - Add only when production pain justifies operational complexity

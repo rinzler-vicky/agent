@@ -92,7 +92,7 @@ Establish the core database schema, multi-tenancy foundation, and basic API infr
 - Immutable versioning patterns
 - NestJS dependency injection and module organization
 
-### Deliverables
+### Outcome
 
 - Fully configured Neon database with core schema
 - NestJS API service with auth and tenant isolation
@@ -195,7 +195,7 @@ Implement the canonical workflow system, task graph compilation, and n8n integra
 - Workflow orchestration patterns
 - State machine design for execution lifecycle
 
-### Deliverables
+### Outcome
 
 - Canonical workflow schema and validation
 - Task graph compiler with tests
@@ -298,7 +298,7 @@ Integrate Composio for external connectivity and implement the tool execution fr
 - Rate limiting and cost control strategies
 - PII detection and redaction techniques
 
-### Deliverables
+### Outcome
 
 - Composio integration service
 - Tool discovery and manifest APIs
@@ -406,7 +406,7 @@ Implement the three-tier memory system and core agent runtime capabilities.
 - Context window optimization
 - Conversation state management
 
-### Deliverables
+### Outcome
 
 - Memory storage and retrieval APIs
 - Semantic search implementation
@@ -506,7 +506,7 @@ Implement the governed mutation system with approval workflows.
 - Compliance and audit requirements
 - Canary deployment strategies
 
-### Deliverables
+### Outcome
 
 - Mutation proposal APIs
 - Approval workflow engine
@@ -604,7 +604,7 @@ Build comprehensive observability, tracing, and debugging capabilities.
 - Observability best practices
 - SRE and on-call procedures
 
-### Deliverables
+### Outcome
 
 - Event streaming infrastructure
 - Trace and run view APIs
@@ -649,7 +649,7 @@ Implement comprehensive testing, evaluation framework, and deployment automation
 - [ ] Create quality scoring
 
 #### 7.4 CI/CD Pipeline
-- [ ] Set up GitHub Actions / GitLab CI
+- [ ] Set up GitHub Actions
 - [ ] Implement automated testing
 - [ ] Create database migration CI
 - [ ] Build canary deployment
@@ -703,7 +703,7 @@ Implement comprehensive testing, evaluation framework, and deployment automation
 - CI/CD best practices
 - Canary deployment techniques
 
-### Deliverables
+### Outcome
 
 - Comprehensive test suite
 - Evaluation framework
@@ -811,7 +811,7 @@ Security hardening, performance optimization, and production preparation.
 - Disaster recovery planning
 - SRE principles and SLIs/SLOs
 
-### Deliverables
+### Outcome
 
 - Security audit report
 - Performance optimization results
@@ -891,7 +891,7 @@ Add advanced durability and execution capabilities based on production needs.
 - Multi-region architectures
 - Advanced memory systems
 
-### Deliverables
+### Outcome
 
 - LangGraph/Temporal adapters (if implemented)
 - Multi-region setup (if implemented)
@@ -988,7 +988,7 @@ Add advanced durability and execution capabilities based on production needs.
 - Logging aggregation (ELK, Loki, or similar)
 
 ### Development Tools
-- Node.js 18+
+- Node.js 20
 - pnpm package manager
 - NestJS CLI
 - Database migration tools
