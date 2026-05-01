@@ -57,4 +57,47 @@ describe('AuthService', () => {
       expect(result.access_token).toBe('mock-token');
     });
   });
+
+  describe('validateServiceAccount', () => {
+    it('throws UnauthorizedException for missing separator', async () => {
+      await expect(service.validateServiceAccount('nodothere'))
+        .rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws UnauthorizedException when id is empty', async () => {
+      await expect(service.validateServiceAccount('.secret'))
+        .rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws UnauthorizedException when service account not found', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [] });
+      await expect(service.validateServiceAccount('sa-id.my-secret'))
+        .rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws UnauthorizedException when bcrypt compare fails', async () => {
+      const hash = await bcrypt.hash('correct-secret', 10);
+      const sa = { id: 'sa-id', api_key_hash: hash, is_active: true, tenant_id: 't1' };
+      mockPool.query.mockResolvedValueOnce({ rows: [sa] });
+      await expect(service.validateServiceAccount('sa-id.wrong-secret'))
+        .rejects.toThrow(UnauthorizedException);
+    });
+
+    it('returns service account when credentials are valid', async () => {
+      const hash = await bcrypt.hash('correct-secret', 10);
+      const sa = { id: 'sa-id', api_key_hash: hash, is_active: true, tenant_id: 't1' };
+      mockPool.query.mockResolvedValueOnce({ rows: [sa] });
+      const result = await service.validateServiceAccount('sa-id.correct-secret');
+      expect(result).toEqual(sa);
+    });
+
+    it('handles secrets containing dots correctly', async () => {
+      const secretWithDots = 'secret.with.dots.inside';
+      const hash = await bcrypt.hash(secretWithDots, 10);
+      const sa = { id: 'sa-id', api_key_hash: hash, is_active: true, tenant_id: 't1' };
+      mockPool.query.mockResolvedValueOnce({ rows: [sa] });
+      const result = await service.validateServiceAccount(`sa-id.${secretWithDots}`);
+      expect(result).toEqual(sa);
+    });
+  });
 });

@@ -22,12 +22,14 @@ export class StorageService {
   private readonly bucket: string;
 
   constructor(private readonly config: ConfigService) {
+    const accessKeyId = config.get<string>('AWS_ACCESS_KEY_ID');
+    const secretAccessKey = config.get<string>('AWS_SECRET_ACCESS_KEY');
+
     this.s3 = new S3Client({
       region: config.get<string>('AWS_REGION', 'us-east-1'),
-      credentials: {
-        accessKeyId: config.get<string>('AWS_ACCESS_KEY_ID', ''),
-        secretAccessKey: config.get<string>('AWS_SECRET_ACCESS_KEY', ''),
-      },
+      ...(accessKeyId && secretAccessKey
+        ? { credentials: { accessKeyId, secretAccessKey } }
+        : {}),
       endpoint: config.get<string>('S3_ENDPOINT'),
     });
     this.bucket = config.get<string>('S3_BUCKET', 'agent-artifacts');

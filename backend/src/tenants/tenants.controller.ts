@@ -3,6 +3,8 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { IsString, IsOptional } from 'class-validator';
 import { TenantsService } from './tenants.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 
 class CreateTenantDto {
   @IsString()
@@ -28,7 +30,8 @@ class UpdateTenantDto {
 
 @ApiTags('tenants')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('platform_admin')
 @Controller({ path: 'tenants', version: '1' })
 export class TenantsController {
   constructor(private readonly tenantsService: TenantsService) {}

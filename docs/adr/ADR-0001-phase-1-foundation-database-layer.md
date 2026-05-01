@@ -68,7 +68,7 @@ Constraints:
 - Clean service boundaries (thin controllers, business logic in services)
 - 24/24 unit tests passing on first implementation
 - OpenAPI/Swagger docs generated automatically
-- Rollback-ready via `006_down.sql` migration
+- Rollback-ready via `006_rollback_down.sql` migration
 
 ### Negative
 
@@ -93,7 +93,7 @@ Constraints:
 
 ## Operational implications
 
-- Requires Postgres 14+ (for `gen_random_uuid()` without extension, pgvector support)
+- Requires Postgres 14+ (pgvector support); `gen_random_uuid()` is built-in from Postgres 13+ and `pgcrypto` is also enabled by migration 001 for compatibility
 - `DATABASE_URL` connection string must include credentials; use Neon's pooled connection string for production
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` required for S3 signed URLs; use IAM roles in production
 - Migration runner (`pnpm migrate:up`) must be run on every deploy before the service starts
@@ -109,7 +109,7 @@ Constraints:
 ## Migration / rollback strategy
 
 - **Up**: `node scripts/migrate.js up` — applies unapplied SQL files in order, tracks in `schema_migrations`
-- **Down**: `node scripts/migrate.js down` — runs `006_down.sql` (drops all Phase 1 tables/functions/extensions)
+- **Down**: `node scripts/migrate.js down` — runs `006_rollback_down.sql` (drops all Phase 1 tables/functions/extensions)
 - **Neon branching**: Create a dev branch from `main` for testing migrations before applying to production branch
 - **PITR**: Neon's point-in-time recovery provides a safety net for catastrophic migration failures
 

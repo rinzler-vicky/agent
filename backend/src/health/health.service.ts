@@ -29,9 +29,12 @@ export class HealthService {
   private async checkDatabase(): Promise<boolean> {
     try {
       const client = await this.pool.connect();
-      await client.query('SELECT 1');
-      client.release();
-      return true;
+      try {
+        await client.query('SELECT 1');
+        return true;
+      } finally {
+        client.release();
+      }
     } catch {
       return false;
     }

@@ -61,6 +61,55 @@ describe('TenantsService', () => {
     });
   });
 
+  describe('findBySlug', () => {
+    it('returns tenant when found', async () => {
+      const tenant = { id: 'uuid-1', slug: 'acme' };
+      mockPool.query.mockResolvedValueOnce({ rows: [tenant] });
+      const result = await service.findBySlug('acme');
+      expect(result).toEqual(tenant);
+    });
+
+    it('throws NotFoundException when slug not found', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [] });
+      await expect(service.findBySlug('unknown')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('update', () => {
+    it('updates displayName successfully', async () => {
+      const updated = { id: 'uuid-1', slug: 'acme', display_name: 'New Name', plan: 'free' };
+      mockPool.query.mockResolvedValueOnce({ rows: [updated] });
+      const result = await service.update('uuid-1', { displayName: 'New Name' });
+      expect(result).toEqual(updated);
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('display_name = $1');
+      expect(params).toContain('New Name');
+    });
+
+    it('updates plan successfully', async () => {
+      const updated = { id: 'uuid-1', slug: 'acme', plan: 'pro' };
+      mockPool.query.mockResolvedValueOnce({ rows: [updated] });
+      const result = await service.update('uuid-1', { plan: 'pro' });
+      expect(result).toEqual(updated);
+    });
+
+    it('updates multiple fields with correct $N indexing', async () => {
+      const updated = { id: 'uuid-1', display_name: 'Name', plan: 'pro' };
+      mockPool.query.mockResolvedValueOnce({ rows: [updated] });
+      await service.update('uuid-1', { displayName: 'Name', plan: 'pro' });
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('display_name = $1');
+      expect(sql).toContain('plan = $2');
+      // id should be the last parameter
+      expect(params[params.length - 1]).toBe('uuid-1');
+    });
+
+    it('throws NotFoundException when tenant not found', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [] });
+      await expect(service.update('uuid-1', { displayName: 'X' })).rejects.toThrow(NotFoundException);
+    });
+  });
+
   describe('deactivate', () => {
     it('deactivates a tenant', async () => {
       mockPool.query.mockResolvedValueOnce({ rowCount: 1 });

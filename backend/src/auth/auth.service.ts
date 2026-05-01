@@ -49,8 +49,12 @@ export class AuthService {
   }
 
   async validateServiceAccount(apiKey: string): Promise<any> {
-    // API keys are stored as "id.secret" format
-    const [id, secret] = apiKey.split('.');
+    // API keys are stored as "id.secret" format; use indexOf to allow dots in the secret
+    const separatorIndex = apiKey.indexOf('.');
+    if (separatorIndex === -1) throw new UnauthorizedException('Invalid API key');
+
+    const id = apiKey.slice(0, separatorIndex);
+    const secret = apiKey.slice(separatorIndex + 1);
     if (!id || !secret) throw new UnauthorizedException('Invalid API key');
 
     const result = await this.pool.query(
