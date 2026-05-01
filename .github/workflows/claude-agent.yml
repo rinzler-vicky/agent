@@ -51,6 +51,34 @@ jobs:
             echo "labels=" >> $GITHUB_OUTPUT
           fi
 
+      - name: Add Issue Labels to PR
+        if: steps.issue_labels.outputs.labels != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          LABELS="${{ steps.issue_labels.outputs.labels }}"
+
+          # Find the most recently opened PR that closes/fixes/resolves this issue.
+          # gh pr list returns PRs newest-first, so head -1 selects the most recent match.
+          # Covers all GitHub closing keywords: close/closes/closed, fix/fixes/fixed,
+          # resolve/resolves/resolved. Uses \b to prevent partial-number matches.
+          PR_NUMBER=$(gh pr list --state open --json number,body \
+            --jq ".[] | select(.body | test(\"(clos(e[sd]?)|fix(e[sd]?)|resolv(e[sd]?))\\s+#$ISSUE_NUMBER\\b\"; \"i\")) | .number" \
+            | head -1)
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open PR found that closes/fixes/resolves issue #$ISSUE_NUMBER. Skipping label copy."
+            exit 0
+          fi
+
+          echo "Applying labels '$LABELS' to PR #$PR_NUMBER"
+          IFS=',' read -ra LABEL_ARRAY <<< "$LABELS"
+          for LABEL in "${LABEL_ARRAY[@]}"; do
+            ERR=$(gh pr edit "$PR_NUMBER" --add-label "$LABEL" 2>&1) || \
+              echo "::warning::Failed to add label '$LABEL' to PR #$PR_NUMBER: $ERR"
+          done
+
       - name: Execute Claude Headless Agent
         id: claude_execution
         uses: anthropics/claude-code-action@v1
@@ -81,31 +109,3 @@ jobs:
             --model claude-3-7-sonnet-20250219
             --max-turns 25
             --allowedTools "Bash(pnpm run lint,pnpm run test,git checkout -b *,git add *,git commit *,git push *,gh pr create *,gh pr edit *),Read,Write,Edit,Glob,Grep"
-
-      - name: Copy Issue Labels to PR
-        if: steps.issue_labels.outputs.labels != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ISSUE_NUMBER=${{ github.event.issue.number }}
-          LABELS="${{ steps.issue_labels.outputs.labels }}"
-
-          # Find the most recently opened PR that closes/fixes/resolves this issue.
-          # gh pr list returns PRs newest-first, so head -1 selects the most recent match.
-          # Covers all GitHub closing keywords: close/closes/closed, fix/fixes/fixed,
-          # resolve/resolves/resolved. Uses \b to prevent partial-number matches.
-          PR_NUMBER=$(gh pr list --state open --json number,body \
-            --jq ".[] | select(.body | test(\"(clos(e[sd]?)|fix(e[sd]?)|resolv(e[sd]?))\\s+#$ISSUE_NUMBER\\b\"; \"i\")) | .number" \
-            | head -1)
-
-          if [ -z "$PR_NUMBER" ]; then
-            echo "No open PR found that closes/fixes/resolves issue #$ISSUE_NUMBER. Skipping label copy."
-            exit 0
-          fi
-
-          echo "Applying labels '$LABELS' to PR #$PR_NUMBER"
-          IFS=',' read -ra LABEL_ARRAY <<< "$LABELS"
-          for LABEL in "${LABEL_ARRAY[@]}"; do
-            ERR=$(gh pr edit "$PR_NUMBER" --add-label "$LABEL" 2>&1) || \
-              echo "::warning::Failed to add label '$LABEL' to PR #$PR_NUMBER: $ERR"
-          done
