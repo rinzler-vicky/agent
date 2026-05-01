@@ -36,7 +36,23 @@ jobs:
           git config user.name "claude-agent[bot]"
           git config user.email "claude-agent[bot]@users.noreply.github.com"
 
+      - name: Get Issue Labels
+        id: issue_labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # On success $LABELS holds the comma-separated label names.
+          # On failure $LABELS holds the error message (from 2>&1), used in the warning below.
+          if LABELS=$(gh issue view ${{ github.event.issue.number }} --json labels --jq '[.labels[].name] | join(",")' 2>&1); then
+            echo "labels=$LABELS" >> $GITHUB_OUTPUT
+            echo "Issue labels: $LABELS"
+          else
+            echo "::warning::Failed to fetch labels for issue #${{ github.event.issue.number }}: $LABELS"
+            echo "labels=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Execute Claude Headless Agent
+        id: claude_execution
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -47,6 +63,7 @@ jobs:
             ISSUE NUMBER: ${{ github.event.issue.number }}
             ISSUE TITLE: ${{ github.event.issue.title }}
             ISSUE BODY: ${{ github.event.issue.body }}
+            ISSUE LABELS: ${{ steps.issue_labels.outputs.labels }}
             
             CRITICAL HEADLESS DIRECTIVE:
             You must act autonomously to resolve the issue.
@@ -57,7 +74,38 @@ jobs:
             4. Run `pnpm run lint` and `pnpm run test`. Fix issues before proceeding.
             5. Update `.agentic/STATE.md` marking the task as complete.
             6. Use `gh pr create` to open a Pull Request referencing issue #${{ github.event.issue.number }}.
+               IMPORTANT: The PR must carry the same labels as the issue. If ISSUE LABELS is non-empty,
+               add each label using `--label "<label>"` flags in the `gh pr create` command.
+               Example: gh pr create --title "..." --body "..." --label "bug" --label "enhancement"
           claude_args: >-
             --model claude-3-7-sonnet-20250219
             --max-turns 25
-            --allowedTools "Bash(pnpm run lint,pnpm run test,git checkout -b *,git add *,git commit *,git push *,gh pr create *),Read,Write,Edit,Glob,Grep"
+            --allowedTools "Bash(pnpm run lint,pnpm run test,git checkout -b *,git add *,git commit *,git push *,gh pr create *,gh pr edit *),Read,Write,Edit,Glob,Grep"
+
+      - name: Copy Issue Labels to PR
+        if: steps.issue_labels.outputs.labels != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          LABELS="${{ steps.issue_labels.outputs.labels }}"
+
+          # Find the most recently opened PR that closes/fixes/resolves this issue.
+          # gh pr list returns PRs newest-first, so head -1 selects the most recent match.
+          # Covers all GitHub closing keywords: close/closes/closed, fix/fixes/fixed,
+          # resolve/resolves/resolved. Uses \b to prevent partial-number matches.
+          PR_NUMBER=$(gh pr list --state open --json number,body \
+            --jq ".[] | select(.body | test(\"(clos(e[sd]?)|fix(e[sd]?)|resolv(e[sd]?))\\s+#$ISSUE_NUMBER\\b\"; \"i\")) | .number" \
+            | head -1)
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open PR found that closes/fixes/resolves issue #$ISSUE_NUMBER. Skipping label copy."
+            exit 0
+          fi
+
+          echo "Applying labels '$LABELS' to PR #$PR_NUMBER"
+          IFS=',' read -ra LABEL_ARRAY <<< "$LABELS"
+          for LABEL in "${LABEL_ARRAY[@]}"; do
+            ERR=$(gh pr edit "$PR_NUMBER" --add-label "$LABEL" 2>&1) || \
+              echo "::warning::Failed to add label '$LABEL' to PR #$PR_NUMBER: $ERR"
+          done
