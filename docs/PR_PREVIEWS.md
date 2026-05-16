@@ -131,6 +131,10 @@ The current workflow builds and pushes Docker images to GHCR and deploys to Rend
 The workflow is configured to deploy to Render using manual PR preview mode:
 
 ```yaml
+- name: Ensure Render service build/start commands
+  run: |
+    # Syncs Render build/start commands for this monorepo backend
+
 - name: Ensure Render manual preview label
   uses: actions/github-script@v7
   with:
@@ -149,6 +153,7 @@ The workflow is configured to deploy to Render using manual PR preview mode:
 - `RENDER_SERVICE_ID`: Render service ID (configured in repository secrets)
 
 **How it works:**
+- Workflow enforces Render build/start commands so PR previews build backend correctly in this monorepo (`pnpm` alone fails on Render)
 - Workflow auto-adds the `render-preview` label required by Render manual preview mode
 - Render provisions/updates the PR preview instance from the PR branch
 - Workflow resolves the preview URL through Render API and only comments after `/v1/health` is reachable

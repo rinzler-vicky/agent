@@ -28,6 +28,47 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Ensure Render service build/start commands
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_BUILD_COMMAND: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @agent/backend build
+          RENDER_START_COMMAND: pnpm --filter @agent/backend start
+        run: |
+          set -euo pipefail
+
+          RENDER_API_BASE='https://api.render.com/v1'
+          SERVICE="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
+          SERVICE_REPO="$(echo "${SERVICE}" | jq -r '.repo // empty')"
+
+          if [ -z "${SERVICE_REPO}" ]; then
+            echo "Render service is not Git-backed; skipping build/start command sync."
+            exit 0
+          fi
+
+          CURRENT_BUILD="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.buildCommand // empty')"
+          CURRENT_START="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.startCommand // empty')"
+
+          if [ "${CURRENT_BUILD}" = "${RENDER_BUILD_COMMAND}" ] && [ "${CURRENT_START}" = "${RENDER_START_COMMAND}" ]; then
+            echo "Render build/start commands already match expected values."
+            exit 0
+          fi
+
+          PAYLOAD="$(
+            jq -n \
+              --arg build "${RENDER_BUILD_COMMAND}" \
+              --arg start "${RENDER_START_COMMAND}" \
+              '{serviceDetails:{envSpecificDetails:{buildCommand:$build,startCommand:$start}}}'
+          )"
+
+          curl -fsSL -X PATCH \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data "${PAYLOAD}" \
+            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}" >/dev/null
+
+          echo "Updated Render build/start commands for backend workspace."
+
       - name: Ensure Render manual preview label
         uses: actions/github-script@v7
         with:

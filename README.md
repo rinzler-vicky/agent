@@ -143,6 +143,7 @@ Every Pull Request marked as "ready for review" automatically triggers Render PR
 1. **Automatic Deployment**: When a PR is ready for review, a GitHub Actions workflow:
    - Builds a Docker image of the backend application
    - Pushes it to GitHub Container Registry (GHCR)
+   - Syncs Render build/start commands for the backend workspace to avoid invalid default builds
    - Applies the `render-preview` label required for Render manual preview mode
    - Resolves the preview URL from Render API and posts it to the PR after health checks pass
 
