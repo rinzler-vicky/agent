@@ -19,7 +19,7 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Established workflow-first execution model where all non-trivial requests become task graphs then workflow runs.
 * Documented governed self-modification model with four mutation classes (A through D) for controlled agent evolution.
 * Phase 1 ADR (ADR-0001) accepted: raw pg driver (no ORM), RLS via current_setting('app.tenant_id'), JWT+bcrypt auth, append-only audit rules.
-* PR Preview Environments: Docker-based deployment with GHCR for container registry, placeholder URL generation (extensible to Fly.io/Render/Railway).
+* PR Preview Environments: Docker-based deployment with GHCR for container registry, Render deployment integration with manual PR preview mode.
 
 ## Completed Tasks
 * Created backend/docs directory for comprehensive system documentation.
@@ -47,11 +47,12 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Created backend/.env.example with all documented env vars.
 * 24/24 unit tests passing (health, tenants, audit, auth, storage services).
 * **PR Preview Automation (Issue #35):**
-  - Created backend/Dockerfile: Multi-stage build for NestJS backend with health checks
+  - Created backend/Dockerfile: Multi-stage build for NestJS backend with health checks (fixed husky prepare script issue with --ignore-scripts flag)
   - Created backend/.dockerignore: Optimized Docker context for backend builds
   - Created docker-compose.yml: Orchestration for backend + PostgreSQL with health checks
   - Created .dockerignore: Root-level Docker ignore for monorepo context
-  - Created .github/workflows/pr-preview.yml: Automated PR preview deployment workflow with GHCR, GitHub Deployments API, and peter-evans/create-or-update-comment integration
+  - Created .github/workflows/pr-preview.yml: Automated PR preview deployment workflow with GHCR, Render deployment (johnbeynon/render-deploy-action@v0.0.8), GitHub Deployments API, and peter-evans/create-or-update-comment integration
+  - Configured Render manual PR preview mode with service URL: https://agent-wmia.onrender.com
   - Created docs/PR_PREVIEWS.md: Comprehensive documentation for PR preview environments
   - Updated README.md: Added section 7 for PR Preview Environments with quick start guide
 
@@ -64,6 +65,7 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Begin Phase 2: Workflow Control Plane.
 
 ## Pending Tasks (PR Preview Automation - Issue #35)
-* Test PR preview workflow on actual PR (mark PR as ready for review to trigger)
-* Optionally integrate live deployment provider (Fly.io/Render/Railway) to replace placeholder URL
+* Test PR preview workflow with Render deployment (mark PR as ready for review to trigger)
+* Verify preview URLs work correctly with Render service: https://agent-wmia.onrender.com
 * Verify teardown works correctly on PR close/merge
+* Consider migrating to isolated PR environments (Fly.io/Railway) if shared environment becomes limiting

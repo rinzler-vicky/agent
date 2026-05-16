@@ -73,8 +73,8 @@ jobs:
           if [ -n "${{ steps.render_deploy.outputs.url }}" ]; then
             PREVIEW_URL="${{ steps.render_deploy.outputs.url }}"
           else
-            # Fallback to constructed URL if render deploy doesn't provide it
-            PREVIEW_URL="https://agent-pr-${PR_NUMBER}.onrender.com"
+            # Use the actual Render service URL (manual PR preview mode)
+            PREVIEW_URL="https://agent-wmia.onrender.com"
           fi
           echo "url=${PREVIEW_URL}" >> $GITHUB_OUTPUT
           echo "Preview URL: ${PREVIEW_URL}"
@@ -113,12 +113,13 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body: |
-            ## 🚀 Preview Environment Ready
+            ## 🚀 Preview Environment Deployed
 
-            Your preview environment has been deployed!
+            Your changes have been deployed to Render!
 
             **Preview URL:** ${{ steps.preview.outputs.url }}
             **Docker Image:** `${{ steps.meta.outputs.tags }}`
+            **PR Number:** #${{ github.event.pull_request.number }}
 
             ### Quick Links
             - 📚 [API Documentation](${{ steps.preview.outputs.url }}/api/docs)
@@ -133,7 +134,8 @@ jobs:
             open ${{ steps.preview.outputs.url }}/api/docs
             ```
 
-            > **Note:** This preview environment will be automatically torn down when the PR is merged or closed.
+            > **Note:** Using Render manual PR preview mode - the service deploys your branch to the shared preview environment.
+            > This deployment will be replaced when new PRs are deployed or the PR is merged/closed.
             >
             > Docker image is available at: `${{ steps.meta.outputs.tags }}`
           comment-tag: pr-preview-comment

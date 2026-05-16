@@ -124,9 +124,35 @@ CORS_ORIGINS=http://localhost:3001
 
 ## Deployment Options
 
-The current workflow builds and pushes Docker images to GHCR. The preview URL generation is currently a placeholder. To enable live deployments, integrate one of the following:
+The current workflow builds and pushes Docker images to GHCR and deploys to Render in manual PR preview mode.
 
-### Option 1: Fly.io (Recommended for cost control)
+### Current Configuration: Render (Manual PR Preview Mode)
+
+The workflow is configured to deploy to Render using manual PR preview mode:
+
+```yaml
+- name: Deploy to Render
+  id: render_deploy
+  uses: johnbeynon/render-deploy-action@v0.0.8
+  with:
+    service-id: ${{ secrets.RENDER_SERVICE_ID }}
+    api-key: ${{ secrets.RENDER_API_KEY }}
+    wait-for-success: true
+```
+
+**Current Service URL:** `https://agent-wmia.onrender.com`
+
+**Secrets configured:**
+- `RENDER_API_KEY`: Render API key (configured in repository secrets)
+- `RENDER_SERVICE_ID`: Render service ID (configured in repository secrets)
+
+**How it works:**
+- Each PR deployment triggers a new deploy to the same Render service
+- The service deploys the latest branch commit
+- Multiple PRs share the same preview environment (last deployed PR wins)
+- Manual mode requires triggering deploys via GitHub Actions rather than automatic Render PR detection
+
+### Alternative Option 1: Fly.io (For isolated PR environments)
 
 Add Fly.io deployment step:
 
@@ -144,24 +170,7 @@ Add Fly.io deployment step:
 **Secrets needed:**
 - `FLY_API_TOKEN`: Your Fly.io API token
 
-### Option 2: Render
-
-Use Render's PR Preview feature:
-
-```yaml
-- name: Deploy to Render
-  uses: render-deploy/action@v1
-  with:
-    api-key: ${{ secrets.RENDER_API_KEY }}
-    service-id: ${{ secrets.RENDER_SERVICE_ID }}
-    image-url: ${{ steps.meta.outputs.tags }}
-```
-
-**Secrets needed:**
-- `RENDER_API_KEY`: Your Render API key
-- `RENDER_SERVICE_ID`: Your Render service ID
-
-### Option 3: Railway
+### Alternative Option 2: Railway
 
 Railway has excellent PR preview support:
 
@@ -185,15 +194,16 @@ The workflow requires these secrets to be configured in your repository:
 | Secret | Required | Purpose |
 |--------|----------|---------|
 | `GITHUB_TOKEN` | Yes (automatic) | Push to GHCR, create deployments |
+| `RENDER_API_KEY` | Yes | Deploy to Render |
+| `RENDER_SERVICE_ID` | Yes | Identify Render service for deployment |
 
-### Optional Secrets (for live deployment)
+### Optional Secrets (for alternative deployment providers)
 
-Choose one deployment provider and configure its secrets:
+If switching to a different deployment provider, configure its secrets:
 
 | Secret | Provider | Purpose |
 |--------|----------|---------|
 | `FLY_API_TOKEN` | Fly.io | Deploy to Fly.io |
-| `RENDER_API_KEY` | Render | Deploy to Render |
 | `RAILWAY_TOKEN` | Railway | Deploy to Railway |
 
 ### Workflow Configuration
