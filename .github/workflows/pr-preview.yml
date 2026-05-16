@@ -33,23 +33,28 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           BACKEND_WORKSPACE: "@agent/backend"
+          RENDER_INSTALL_COMMAND: corepack enable && pnpm install --frozen-lockfile
+          RENDER_BUILD_SCRIPT: build
+          RENDER_START_SCRIPT: start
         run: |
           set -euo pipefail
 
           RENDER_API_BASE='https://api.render.com/v1'
-          RENDER_BUILD_COMMAND="corepack enable && pnpm install --frozen-lockfile && pnpm --filter ${BACKEND_WORKSPACE} build"
-          RENDER_START_COMMAND="pnpm --filter ${BACKEND_WORKSPACE} start"
+          BUILD_COMMAND_QUERY='.serviceDetails.envSpecificDetails.buildCommand // .serviceDetails.buildCommand // empty'
+          START_COMMAND_QUERY='.serviceDetails.envSpecificDetails.startCommand // .serviceDetails.startCommand // empty'
+          RENDER_BUILD_COMMAND="${RENDER_INSTALL_COMMAND} && pnpm --filter ${BACKEND_WORKSPACE} ${RENDER_BUILD_SCRIPT}"
+          RENDER_START_COMMAND="pnpm --filter ${BACKEND_WORKSPACE} ${RENDER_START_SCRIPT}"
 
           SERVICE="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
-          SERVICE_REPO="$(echo "${SERVICE}" | jq -r '.repo // .service.repo // empty')"
+          SERVICE_REPO="$(echo "${SERVICE}" | jq -r '.repo // empty')"
 
           if [ -z "${SERVICE_REPO}" ]; then
             echo "Render service is not Git-backed; skipping build/start command sync."
             exit 0
           fi
 
-          CURRENT_BUILD="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.buildCommand // .serviceDetails.buildCommand // empty')"
-          CURRENT_START="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.startCommand // .serviceDetails.startCommand // empty')"
+          CURRENT_BUILD="$(echo "${SERVICE}" | jq -r "${BUILD_COMMAND_QUERY}")"
+          CURRENT_START="$(echo "${SERVICE}" | jq -r "${START_COMMAND_QUERY}")"
 
           if [ "${CURRENT_BUILD}" = "${RENDER_BUILD_COMMAND}" ] && [ "${CURRENT_START}" = "${RENDER_START_COMMAND}" ]; then
             echo "Render build/start commands already match expected values."
@@ -70,13 +75,17 @@ jobs:
             "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
 
           UPDATED_SERVICE="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
-          UPDATED_BUILD="$(echo "${UPDATED_SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.buildCommand // .serviceDetails.buildCommand // empty')"
-          UPDATED_START="$(echo "${UPDATED_SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.startCommand // .serviceDetails.startCommand // empty')"
+          UPDATED_BUILD="$(echo "${UPDATED_SERVICE}" | jq -r "${BUILD_COMMAND_QUERY}")"
+          UPDATED_START="$(echo "${UPDATED_SERVICE}" | jq -r "${START_COMMAND_QUERY}")"
 
           if [ "${UPDATED_BUILD}" != "${RENDER_BUILD_COMMAND}" ] || [ "${UPDATED_START}" != "${RENDER_START_COMMAND}" ]; then
             echo "Render build/start command sync verification failed."
             echo "PATCH response:"
             echo "${PATCH_RESPONSE}"
+            echo "Expected build command: ${RENDER_BUILD_COMMAND}"
+            echo "Actual build command: ${UPDATED_BUILD}"
+            echo "Expected start command: ${RENDER_START_COMMAND}"
+            echo "Actual start command: ${UPDATED_START}"
             exit 1
           fi
 
