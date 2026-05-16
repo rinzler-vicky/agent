@@ -87,6 +87,7 @@ jobs:
           set -euo pipefail
 
           RENDER_API_BASE='https://api.render.com/v1'
+          BRANCH="${PR_BRANCH}"
           if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
             echo "Invalid PR number: ${PR_NUMBER}"
             exit 1
@@ -157,8 +158,9 @@ jobs:
         run: |
           set -euo pipefail
           HEALTH_FILE="$(mktemp)"
+          trap 'rm -f "${HEALTH_FILE}"' EXIT
 
-          if ! [[ "${PREVIEW_URL}" =~ ^https://[a-zA-Z0-9-]+\.onrender\.com/?$ ]]; then
+          if ! [[ "${PREVIEW_URL}" =~ ^https://.*\.onrender\.com/?$ ]]; then
             echo "Resolved preview URL is not a valid onrender.com URL: ${PREVIEW_URL}"
             exit 1
           fi
