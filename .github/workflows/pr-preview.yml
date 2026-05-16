@@ -40,6 +40,8 @@ jobs:
           set -euo pipefail
 
           RENDER_API_BASE='https://api.render.com/v1'
+          # Render can return command fields either under envSpecificDetails (native env)
+          # or at the serviceDetails root depending on service/runtime shape.
           BUILD_COMMAND_QUERY='.serviceDetails.envSpecificDetails.buildCommand // .serviceDetails.buildCommand // empty'
           START_COMMAND_QUERY='.serviceDetails.envSpecificDetails.startCommand // .serviceDetails.startCommand // empty'
           RENDER_BUILD_COMMAND="${RENDER_INSTALL_COMMAND} && pnpm --filter ${BACKEND_WORKSPACE} ${RENDER_BUILD_SCRIPT}"
@@ -67,6 +69,10 @@ jobs:
               --arg start "${RENDER_START_COMMAND}" \
               '{serviceDetails:{envSpecificDetails:{buildCommand:$build,startCommand:$start}}}'
           )"
+          if [ -z "${PAYLOAD}" ]; then
+            echo "Failed to generate Render PATCH payload."
+            exit 1
+          fi
 
           PATCH_RESPONSE="$(curl -fsSL -X PATCH \
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
@@ -79,7 +85,7 @@ jobs:
           UPDATED_START="$(echo "${UPDATED_SERVICE}" | jq -r "${START_COMMAND_QUERY}")"
 
           if [ "${UPDATED_BUILD}" != "${RENDER_BUILD_COMMAND}" ] || [ "${UPDATED_START}" != "${RENDER_START_COMMAND}" ]; then
-            echo "Render build/start command sync verification failed."
+            echo "Render build/start command sync verification failed after PATCH response was received."
             echo "PATCH response:"
             echo "${PATCH_RESPONSE}"
             echo "Expected build command: ${RENDER_BUILD_COMMAND}"
