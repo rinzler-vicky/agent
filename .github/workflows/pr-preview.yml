@@ -57,15 +57,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Deploy to Render
+        id: render_deploy
+        uses: johnbeynon/render-deploy-action@v0.0.8
+        with:
+          service-id: ${{ secrets.RENDER_SERVICE_ID }}
+          api-key: ${{ secrets.RENDER_API_KEY }}
+          wait-for-success: true
+
       - name: Generate Preview URL
         id: preview
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          # For now, we'll generate a placeholder URL
-          # In production, this would be replaced with actual deployment URL from Fly.io/Render/Railway
-          PREVIEW_URL="https://pr-${PR_NUMBER}.preview.agent.example.com"
+          # Get the Render service URL from the deployment
+          if [ -n "${{ steps.render_deploy.outputs.url }}" ]; then
+            PREVIEW_URL="${{ steps.render_deploy.outputs.url }}"
+          else
+            # Fallback to constructed URL if render deploy doesn't provide it
+            PREVIEW_URL="https://agent-pr-${PR_NUMBER}.onrender.com"
+          fi
           echo "url=${PREVIEW_URL}" >> $GITHUB_OUTPUT
-          echo "Preview URL would be: ${PREVIEW_URL}"
+          echo "Preview URL: ${PREVIEW_URL}"
 
       - name: Create GitHub Deployment
         id: deployment
