@@ -96,6 +96,9 @@ jobs:
 
           OWNER_ID=$(echo "${BASE_SERVICE}" | jq -r '.ownerId')
           BASE_URL=$(echo "${BASE_SERVICE}" | jq -r '.serviceDetails.url // empty')
+          if [ -z "${BASE_URL}" ]; then
+            echo "Base Render service URL is not available from Render API; preview URL must be discovered from preview instances."
+          fi
 
           PREVIEW_URL=''
           for attempt in $(seq 1 "${RESOLVE_URL_MAX_ATTEMPTS}"); do
@@ -106,12 +109,22 @@ jobs:
             PREVIEW_URL=$(echo "${SERVICES}" | jq -r \
               --arg parent "${RENDER_SERVICE_ID}" \
               --arg branch "${BRANCH}" \
-              --arg pr "pr-${PR_NUMBER}" \
               '[.[] |
                 select((.serviceDetails.parentServer.id // "") == $parent) |
-                select((.branch // "") == $branch or ((.name // "") | test($pr; "i"))) |
+                select((.branch // "") == $branch) |
                 .serviceDetails.url // empty
               ] | first // empty')
+
+            if [ -z "${PREVIEW_URL}" ]; then
+              PREVIEW_URL=$(echo "${SERVICES}" | jq -r \
+                --arg parent "${RENDER_SERVICE_ID}" \
+                --arg prNameSuffix "-pr-${PR_NUMBER}$" \
+                '[.[] |
+                  select((.serviceDetails.parentServer.id // "") == $parent) |
+                  select((.name // "") | test($prNameSuffix; "i")) |
+                  .serviceDetails.url // empty
+                ] | first // empty')
+            fi
 
             if [ -n "${PREVIEW_URL}" ]; then
               break
@@ -122,13 +135,13 @@ jobs:
           done
 
           if [ -z "${PREVIEW_URL}" ]; then
-            PREVIEW_URL="${BASE_URL}"
-            echo "Falling back to base Render service URL: ${PREVIEW_URL}"
-          fi
-
-          if [ -z "${PREVIEW_URL}" ]; then
-            echo "Unable to resolve a Render preview URL."
-            exit 1
+            if [ -n "${BASE_URL}" ]; then
+              PREVIEW_URL="${BASE_URL}"
+              echo "Falling back to base Render service URL: ${PREVIEW_URL}"
+            else
+              echo "Unable to resolve a Render preview URL and no base URL is available."
+              exit 1
+            fi
           fi
 
           echo "url=${PREVIEW_URL}" >> $GITHUB_OUTPUT
@@ -141,12 +154,13 @@ jobs:
           API_READY_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
+          HEALTH_FILE="$(mktemp /tmp/preview-health-${GITHUB_RUN_ID}-XXXXXX.json)"
 
           for attempt in $(seq 1 "${API_READY_MAX_ATTEMPTS}"); do
-            STATUS=$(curl -sS -o /tmp/preview-health.json -w "%{http_code}" "${PREVIEW_URL}/v1/health" || true)
+            STATUS=$(curl -sS -o "${HEALTH_FILE}" -w "%{http_code}" "${PREVIEW_URL}/v1/health" || true)
             if [ "${STATUS}" = "200" ]; then
               echo "Preview API is ready."
-              cat /tmp/preview-health.json
+              cat "${HEALTH_FILE}"
               exit 0
             fi
 
