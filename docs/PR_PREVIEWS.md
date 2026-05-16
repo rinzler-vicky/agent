@@ -131,13 +131,15 @@ The current workflow builds and pushes Docker images to GHCR and deploys to Rend
 The workflow is configured to deploy to Render using manual PR preview mode:
 
 ```yaml
-- name: Deploy to Render
-  id: render_deploy
-  uses: johnbeynon/render-deploy-action@v0.0.8
+- name: Ensure Render manual preview label
+  uses: actions/github-script@v7
   with:
-    service-id: ${{ secrets.RENDER_SERVICE_ID }}
-    api-key: ${{ secrets.RENDER_API_KEY }}
-    wait-for-success: true
+    script: |
+      # Adds `render-preview` label automatically
+
+- name: Resolve Render Preview URL
+  run: |
+    # Polls Render API for the PR preview URL
 ```
 
 **Current Service URL:** `https://agent-wmia.onrender.com`
@@ -147,10 +149,10 @@ The workflow is configured to deploy to Render using manual PR preview mode:
 - `RENDER_SERVICE_ID`: Render service ID (configured in repository secrets)
 
 **How it works:**
-- Each PR deployment triggers a new deploy to the same Render service
-- The service deploys the latest branch commit
-- Multiple PRs share the same preview environment (last deployed PR wins)
-- Manual mode requires triggering deploys via GitHub Actions rather than automatic Render PR detection
+- Workflow auto-adds the `render-preview` label required by Render manual preview mode
+- Render provisions/updates the PR preview instance from the PR branch
+- Workflow resolves the preview URL through Render API and only comments after `/v1/health` is reachable
+- If a PR-specific preview URL is not yet available, workflow falls back to the base service URL
 
 ### Alternative Option 1: Fly.io (For isolated PR environments)
 

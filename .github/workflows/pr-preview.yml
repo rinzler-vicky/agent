@@ -28,6 +28,23 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Ensure Render manual preview label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map((label) => label.name);
+            if (!labels.includes('render-preview')) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: ['render-preview'],
+              });
+              core.info('Added render-preview label to trigger Render manual PR preview.');
+            } else {
+              core.info('render-preview label already exists.');
+            }
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -57,27 +74,81 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Deploy to Render
-        id: render_deploy
-        uses: johnbeynon/render-deploy-action@v0.0.8
-        with:
-          service-id: ${{ secrets.RENDER_SERVICE_ID }}
-          api-key: ${{ secrets.RENDER_API_KEY }}
-          wait-for-success: true
-
-      - name: Generate Preview URL
+      - name: Resolve Render Preview URL
         id: preview
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          # Get the Render service URL from the deployment
-          if [ -n "${{ steps.render_deploy.outputs.url }}" ]; then
-            PREVIEW_URL="${{ steps.render_deploy.outputs.url }}"
-          else
-            # Use the actual Render service URL (manual PR preview mode)
-            PREVIEW_URL="https://agent-wmia.onrender.com"
+          set -euo pipefail
+
+          PR_NUMBER='${{ github.event.pull_request.number }}'
+          BRANCH='${{ github.event.pull_request.head.ref }}'
+          RENDER_API_BASE='https://api.render.com/v1'
+
+          BASE_SERVICE=$(curl -fsSL \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")
+
+          OWNER_ID=$(echo "${BASE_SERVICE}" | jq -r '.ownerId')
+          BASE_URL=$(echo "${BASE_SERVICE}" | jq -r '.serviceDetails.url // empty')
+
+          PREVIEW_URL=''
+          for attempt in $(seq 1 30); do
+            SERVICES=$(curl -fsSL \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" \
+              "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")
+
+            PREVIEW_URL=$(echo "${SERVICES}" | jq -r \
+              --arg parent "${RENDER_SERVICE_ID}" \
+              --arg branch "${BRANCH}" \
+              --arg pr "pr-${PR_NUMBER}" \
+              '[.[] |
+                select((.serviceDetails.parentServer.id // "") == $parent) |
+                select((.branch // "") == $branch or ((.name // "") | test($pr; "i"))) |
+                .serviceDetails.url // empty
+              ] | first // empty')
+
+            if [ -n "${PREVIEW_URL}" ]; then
+              break
+            fi
+
+            echo "Preview URL not available yet (attempt ${attempt}/30). Retrying..."
+            sleep 10
+          done
+
+          if [ -z "${PREVIEW_URL}" ]; then
+            PREVIEW_URL="${BASE_URL}"
+            echo "Falling back to base Render service URL: ${PREVIEW_URL}"
           fi
+
+          if [ -z "${PREVIEW_URL}" ]; then
+            echo "Unable to resolve a Render preview URL."
+            exit 1
+          fi
+
           echo "url=${PREVIEW_URL}" >> $GITHUB_OUTPUT
           echo "Preview URL: ${PREVIEW_URL}"
+
+      - name: Wait for Preview API readiness
+        run: |
+          set -euo pipefail
+          PREVIEW_URL='${{ steps.preview.outputs.url }}'
+
+          for attempt in $(seq 1 24); do
+            STATUS=$(curl -sS -o /tmp/preview-health.json -w "%{http_code}" "${PREVIEW_URL}/v1/health" || true)
+            if [ "${STATUS}" = "200" ]; then
+              echo "Preview API is ready."
+              cat /tmp/preview-health.json
+              exit 0
+            fi
+
+            echo "Preview API not ready yet (attempt ${attempt}/24, status=${STATUS}). Retrying..."
+            sleep 10
+          done
+
+          echo "Preview API did not become ready in time."
+          exit 1
 
       - name: Create GitHub Deployment
         id: deployment
@@ -134,8 +205,8 @@ jobs:
             open ${{ steps.preview.outputs.url }}/api/docs
             ```
 
-            > **Note:** Using Render manual PR preview mode - the service deploys your branch to the shared preview environment.
-            > This deployment will be replaced when new PRs are deployed or the PR is merged/closed.
+            > **Note:** Render manual PR preview mode is enabled.
+            > The `render-preview` label is automatically applied to keep preview provisioning consistent.
             >
             > Docker image is available at: `${{ steps.meta.outputs.tags }}`
           comment-tag: pr-preview-comment

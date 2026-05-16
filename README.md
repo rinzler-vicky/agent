@@ -136,21 +136,20 @@ The AI posts a Markdown review comment on the PR identifying any architectural v
 
 ## 7. PR Preview Environments
 
-Every Pull Request marked as "ready for review" automatically gets a fully isolated preview environment. This allows reviewers to test changes before merging without any manual setup.
+Every Pull Request marked as "ready for review" automatically triggers Render PR preview automation so reviewers can validate API behavior before merging.
 
 ### How Preview Environments Work
 
 1. **Automatic Deployment**: When a PR is ready for review, a GitHub Actions workflow:
    - Builds a Docker image of the backend application
    - Pushes it to GitHub Container Registry (GHCR)
-   - Creates a unique preview environment
-   - Posts the preview URL as a PR comment
+   - Applies the `render-preview` label required for Render manual preview mode
+   - Resolves the preview URL from Render API and posts it to the PR after health checks pass
 
-2. **Isolated Testing**: Each preview environment includes:
-   - Dedicated backend service
-   - Ephemeral PostgreSQL database
-   - Unique environment variables
-   - Full API documentation at `/api/docs`
+2. **Preview Validation**:
+   - Health endpoint readiness is verified at `/v1/health` before posting links
+   - API docs are exposed at `/api/docs`
+   - Render handles PR preview lifecycle in manual mode
 
 3. **Automatic Cleanup**: When the PR is merged or closed:
    - The preview environment is torn down
@@ -280,4 +279,3 @@ Configure these in your repository's **Settings → Secrets and variables → Ac
 - [ ] Open a GitHub Issue describing the first module to build (see [Section 2](#2-your-only-job-writing-a-good-issue)).
 - [ ] Apply the label `route: claude-backend` to the issue.
 - [ ] Wait for the agent to open a PR, then read the AI gatekeeper report before merging.
-
