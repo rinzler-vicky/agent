@@ -92,10 +92,23 @@ jobs:
             echo "Invalid PR number: ${PR_NUMBER}"
             exit 1
           fi
+          if [ -z "${BRANCH}" ]; then
+            echo "PR branch is empty."
+            exit 1
+          fi
 
-          BASE_SERVICE=$(curl -fsSL \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")
+          render_api_get() {
+            local endpoint="$1"
+            local label="$2"
+            local response=''
+            if ! response=$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}${endpoint}"); then
+              echo "Render API request failed while fetching ${label} (${endpoint})."
+              exit 1
+            fi
+            echo "${response}"
+          }
+
+          BASE_SERVICE="$(render_api_get "/services/${RENDER_SERVICE_ID}" "base service")"
 
           OWNER_ID=$(echo "${BASE_SERVICE}" | jq -r '.ownerId')
           BASE_URL=$(echo "${BASE_SERVICE}" | jq -r '.serviceDetails.url // empty')
@@ -105,9 +118,7 @@ jobs:
 
           PREVIEW_URL=''
           for attempt in $(seq 1 "${RESOLVE_URL_MAX_ATTEMPTS}"); do
-            SERVICES=$(curl -fsSL \
-              -H "Authorization: Bearer ${RENDER_API_KEY}" \
-              "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")
+            SERVICES="$(render_api_get "/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100" "services list")"
 
             PREVIEW_URL=$(echo "${SERVICES}" | jq -r \
               --arg parent "${RENDER_SERVICE_ID}" \
@@ -160,13 +171,27 @@ jobs:
           HEALTH_FILE="$(mktemp)"
           trap 'rm -f "${HEALTH_FILE}"' EXIT
 
-          if ! [[ "${PREVIEW_URL}" =~ ^https://.*\.onrender\.com/?$ ]]; then
+          if [[ "${PREVIEW_URL}" != https://* ]]; then
+            echo "Resolved preview URL must use HTTPS: ${PREVIEW_URL}"
+            exit 1
+          fi
+
+          PREVIEW_HOST="${PREVIEW_URL#https://}"
+          PREVIEW_HOST="${PREVIEW_HOST%%/*}"
+          if [[ "${PREVIEW_HOST}" != *.onrender.com ]]; then
             echo "Resolved preview URL is not a valid onrender.com URL: ${PREVIEW_URL}"
             exit 1
           fi
 
           for attempt in $(seq 1 "${API_READY_MAX_ATTEMPTS}"); do
-            STATUS=$(curl -sS -o "${HEALTH_FILE}" -w "%{http_code}" "${PREVIEW_URL}/v1/health" || true)
+            CURL_EXIT=0
+            STATUS=$(curl -sS -o "${HEALTH_FILE}" -w "%{http_code}" "${PREVIEW_URL}/v1/health") || CURL_EXIT=$?
+            if [ "${CURL_EXIT}" -ne 0 ]; then
+              echo "Health check request failed (attempt ${attempt}/${API_READY_MAX_ATTEMPTS}, curl_exit=${CURL_EXIT}). Retrying..."
+              sleep "${API_READY_RETRY_DELAY_SECONDS}"
+              continue
+            fi
+
             if [ "${STATUS}" = "200" ]; then
               echo "Preview API is ready."
               cat "${HEALTH_FILE}"
