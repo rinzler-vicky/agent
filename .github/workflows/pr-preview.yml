@@ -86,9 +86,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          PR_NUMBER="${PR_NUMBER}"
-          BRANCH="${PR_BRANCH}"
           RENDER_API_BASE='https://api.render.com/v1'
+          if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PR number: ${PR_NUMBER}"
+            exit 1
+          fi
 
           BASE_SERVICE=$(curl -fsSL \
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
@@ -118,10 +120,10 @@ jobs:
             if [ -z "${PREVIEW_URL}" ]; then
               PREVIEW_URL=$(echo "${SERVICES}" | jq -r \
                 --arg parent "${RENDER_SERVICE_ID}" \
-                --arg prNameSuffix "-pr-${PR_NUMBER}$" \
+                --arg prNameSuffix "-pr-${PR_NUMBER}" \
                 '[.[] |
                   select((.serviceDetails.parentServer.id // "") == $parent) |
-                  select((.name // "") | test($prNameSuffix; "i")) |
+                  select(((.name // "") | ascii_downcase | endswith($prNameSuffix))) |
                   .serviceDetails.url // empty
                 ] | first // empty')
             fi
@@ -154,7 +156,12 @@ jobs:
           API_READY_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
-          HEALTH_FILE="$(mktemp /tmp/preview-health-${GITHUB_RUN_ID}-XXXXXX.json)"
+          HEALTH_FILE="$(mktemp)"
+
+          if ! [[ "${PREVIEW_URL}" =~ ^https://[a-zA-Z0-9-]+\.onrender\.com/?$ ]]; then
+            echo "Resolved preview URL is not a valid onrender.com URL: ${PREVIEW_URL}"
+            exit 1
+          fi
 
           for attempt in $(seq 1 "${API_READY_MAX_ATTEMPTS}"); do
             STATUS=$(curl -sS -o "${HEALTH_FILE}" -w "%{http_code}" "${PREVIEW_URL}/v1/health" || true)
