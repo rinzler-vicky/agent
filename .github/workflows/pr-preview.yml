@@ -79,11 +79,15 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          RESOLVE_URL_MAX_ATTEMPTS: "30"
+          RESOLVE_URL_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
 
-          PR_NUMBER='${{ github.event.pull_request.number }}'
-          BRANCH='${{ github.event.pull_request.head.ref }}'
+          PR_NUMBER="${PR_NUMBER}"
+          BRANCH="${PR_BRANCH}"
           RENDER_API_BASE='https://api.render.com/v1'
 
           BASE_SERVICE=$(curl -fsSL \
@@ -94,7 +98,7 @@ jobs:
           BASE_URL=$(echo "${BASE_SERVICE}" | jq -r '.serviceDetails.url // empty')
 
           PREVIEW_URL=''
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 "${RESOLVE_URL_MAX_ATTEMPTS}"); do
             SERVICES=$(curl -fsSL \
               -H "Authorization: Bearer ${RENDER_API_KEY}" \
               "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")
@@ -113,8 +117,8 @@ jobs:
               break
             fi
 
-            echo "Preview URL not available yet (attempt ${attempt}/30). Retrying..."
-            sleep 10
+            echo "Preview URL not available yet (attempt ${attempt}/${RESOLVE_URL_MAX_ATTEMPTS}). Retrying..."
+            sleep "${RESOLVE_URL_RETRY_DELAY_SECONDS}"
           done
 
           if [ -z "${PREVIEW_URL}" ]; then
@@ -131,11 +135,14 @@ jobs:
           echo "Preview URL: ${PREVIEW_URL}"
 
       - name: Wait for Preview API readiness
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+          API_READY_MAX_ATTEMPTS: "24"
+          API_READY_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
-          PREVIEW_URL='${{ steps.preview.outputs.url }}'
 
-          for attempt in $(seq 1 24); do
+          for attempt in $(seq 1 "${API_READY_MAX_ATTEMPTS}"); do
             STATUS=$(curl -sS -o /tmp/preview-health.json -w "%{http_code}" "${PREVIEW_URL}/v1/health" || true)
             if [ "${STATUS}" = "200" ]; then
               echo "Preview API is ready."
@@ -143,8 +150,8 @@ jobs:
               exit 0
             fi
 
-            echo "Preview API not ready yet (attempt ${attempt}/24, status=${STATUS}). Retrying..."
-            sleep 10
+            echo "Preview API not ready yet (attempt ${attempt}/${API_READY_MAX_ATTEMPTS}, status=${STATUS}). Retrying..."
+            sleep "${API_READY_RETRY_DELAY_SECONDS}"
           done
 
           echo "Preview API did not become ready in time."
