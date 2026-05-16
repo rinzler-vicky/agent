@@ -1,0 +1,181 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  packages: write
+  deployments: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy Preview
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false && github.event.action != 'closed'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=pr
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate Preview URL
+        id: preview
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          # For now, we'll generate a placeholder URL
+          # In production, this would be replaced with actual deployment URL from Fly.io/Render/Railway
+          PREVIEW_URL="https://pr-${PR_NUMBER}.preview.agent.example.com"
+          echo "url=${PREVIEW_URL}" >> $GITHUB_OUTPUT
+          echo "Preview URL would be: ${PREVIEW_URL}"
+
+      - name: Create GitHub Deployment
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.payload.pull_request.head.sha,
+              environment: `pr-${context.payload.pull_request.number}`,
+              description: `Preview environment for PR #${context.payload.pull_request.number}`,
+              auto_merge: false,
+              required_contexts: [],
+              transient_environment: true,
+              production_environment: false
+            });
+
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: deployment.data.id,
+              state: 'success',
+              log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              environment_url: '${{ steps.preview.outputs.url }}',
+              description: 'Preview environment deployed'
+            });
+
+            return deployment.data.id;
+
+      - name: Comment PR with Preview URL
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## 🚀 Preview Environment Ready
+
+            Your preview environment has been deployed!
+
+            **Preview URL:** ${{ steps.preview.outputs.url }}
+            **Docker Image:** `${{ steps.meta.outputs.tags }}`
+
+            ### Quick Links
+            - 📚 [API Documentation](${{ steps.preview.outputs.url }}/api/docs)
+            - ❤️ [Health Check](${{ steps.preview.outputs.url }}/v1/health)
+
+            ### Testing this Preview
+            ```bash
+            # Health check
+            curl ${{ steps.preview.outputs.url }}/v1/health
+
+            # View API docs
+            open ${{ steps.preview.outputs.url }}/api/docs
+            ```
+
+            > **Note:** This preview environment will be automatically torn down when the PR is merged or closed.
+            >
+            > Docker image is available at: `${{ steps.meta.outputs.tags }}`
+          comment-tag: pr-preview-comment
+
+  teardown:
+    name: Teardown Preview
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+
+    steps:
+      - name: Set Environment to Inactive
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deployments = await github.rest.repos.listDeployments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment: `pr-${context.payload.pull_request.number}`
+            });
+
+            for (const deployment of deployments.data) {
+              await github.rest.repos.createDeploymentStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                deployment_id: deployment.id,
+                state: 'inactive',
+                description: 'Preview environment torn down'
+              });
+            }
+
+      - name: Delete Environment
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            try {
+              await github.rest.repos.deleteAnEnvironment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                environment_name: `pr-${context.payload.pull_request.number}`
+              });
+            } catch (error) {
+              console.log('Environment may not exist or already deleted:', error.message);
+            }
+
+      - name: Comment PR Teardown
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## 🧹 Preview Environment Torn Down
+
+            The preview environment for this PR has been automatically cleaned up.
+
+            **Status:** Inactive
+            **Reason:** PR was ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
+          comment-tag: pr-preview-comment

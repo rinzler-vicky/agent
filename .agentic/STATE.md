@@ -7,6 +7,7 @@ This file serves as the hot memory. Read at the start of every execution; update
 
 ## Current Objective
 Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase 1b integration tests and Neon provisioning.
+PR Preview Automation — implementing ephemeral environments for pull requests (Issue #35).
 
 ## Decisions Made
 * Established separate architectural files for frontend and backend to limit context window pollution.
@@ -18,6 +19,7 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Established workflow-first execution model where all non-trivial requests become task graphs then workflow runs.
 * Documented governed self-modification model with four mutation classes (A through D) for controlled agent evolution.
 * Phase 1 ADR (ADR-0001) accepted: raw pg driver (no ORM), RLS via current_setting('app.tenant_id'), JWT+bcrypt auth, append-only audit rules.
+* PR Preview Environments: Docker-based deployment with GHCR for container registry, placeholder URL generation (extensible to Fly.io/Render/Railway).
 
 ## Completed Tasks
 * Created backend/docs directory for comprehensive system documentation.
@@ -44,6 +46,14 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Created backend/scripts/migrate.js: simple migration runner tracking applied migrations in schema_migrations table.
 * Created backend/.env.example with all documented env vars.
 * 24/24 unit tests passing (health, tenants, audit, auth, storage services).
+* **PR Preview Automation (Issue #35):**
+  - Created backend/Dockerfile: Multi-stage build for NestJS backend with health checks
+  - Created backend/.dockerignore: Optimized Docker context for backend builds
+  - Created docker-compose.yml: Orchestration for backend + PostgreSQL with health checks
+  - Created .dockerignore: Root-level Docker ignore for monorepo context
+  - Created .github/workflows/pr-preview.yml: Automated PR preview deployment workflow with GHCR, GitHub Deployments API, and peter-evans/create-or-update-comment integration
+  - Created docs/PR_PREVIEWS.md: Comprehensive documentation for PR preview environments
+  - Updated README.md: Added section 7 for PR Preview Environments with quick start guide
 
 ## Pending Tasks (Phase 1b)
 * Provision Neon Postgres instance and configure database branching strategy.
@@ -52,3 +62,8 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Add integration/E2E tests (Supertest against live NestJS app).
 * Review ADR-0001 with stakeholders and get formal sign-off.
 * Begin Phase 2: Workflow Control Plane.
+
+## Pending Tasks (PR Preview Automation - Issue #35)
+* Test PR preview workflow on actual PR (mark PR as ready for review to trigger)
+* Optionally integrate live deployment provider (Fly.io/Render/Railway) to replace placeholder URL
+* Verify teardown works correctly on PR close/merge

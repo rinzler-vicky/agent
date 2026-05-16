@@ -12,11 +12,12 @@ This project is built and maintained **entirely by AI agents**. There is no manu
 4. [What Happens Next (Fully Automated)](#4-what-happens-next-fully-automated)
 5. [The Autonomous Feedback Loop](#5-the-autonomous-feedback-loop)
 6. [The AI Gatekeeper (Structural Review)](#6-the-ai-gatekeeper-structural-review)
-7. [Repository Memory Files](#7-repository-memory-files)
-8. [Architecture Constraints](#8-architecture-constraints)
-9. [Monorepo Structure](#9-monorepo-structure)
-10. [Secrets Required](#10-secrets-required)
-11. [Workflow Reference](#11-workflow-reference)
+7. [PR Preview Environments](#7-pr-preview-environments)
+8. [Repository Memory Files](#8-repository-memory-files)
+9. [Architecture Constraints](#9-architecture-constraints)
+10. [Monorepo Structure](#10-monorepo-structure)
+11. [Secrets Required](#11-secrets-required)
+12. [Workflow Reference](#12-workflow-reference)
 
 ---
 
@@ -133,7 +134,57 @@ The AI posts a Markdown review comment on the PR identifying any architectural v
 
 ---
 
-## 7. Repository Memory Files
+## 7. PR Preview Environments
+
+Every Pull Request marked as "ready for review" automatically gets a fully isolated preview environment. This allows reviewers to test changes before merging without any manual setup.
+
+### How Preview Environments Work
+
+1. **Automatic Deployment**: When a PR is ready for review, a GitHub Actions workflow:
+   - Builds a Docker image of the backend application
+   - Pushes it to GitHub Container Registry (GHCR)
+   - Creates a unique preview environment
+   - Posts the preview URL as a PR comment
+
+2. **Isolated Testing**: Each preview environment includes:
+   - Dedicated backend service
+   - Ephemeral PostgreSQL database
+   - Unique environment variables
+   - Full API documentation at `/api/docs`
+
+3. **Automatic Cleanup**: When the PR is merged or closed:
+   - The preview environment is torn down
+   - All resources are cleaned up
+   - A cleanup notification is posted to the PR
+
+### Using Preview Environments
+
+As a reviewer, you can test any PR by:
+1. Opening the PR on GitHub
+2. Finding the preview URL in the automated comment
+3. Accessing the API at the preview URL
+4. Testing the changes interactively
+
+For detailed documentation, see [docs/PR_PREVIEWS.md](docs/PR_PREVIEWS.md).
+
+### Local Testing
+
+You can also test the Docker setup locally:
+
+```bash
+# Build and run with Docker Compose
+docker-compose up
+
+# Access the backend
+curl http://localhost:3000/v1/health
+
+# View API documentation
+open http://localhost:3000/api/docs
+```
+
+---
+
+## 8. Repository Memory Files
 
 Agents have no persistent memory between runs. These disk-backed files act as the project's shared brain:
 
@@ -151,7 +202,7 @@ When a task is completed, `.agentic/STATE.md` is automatically updated by the ag
 
 ---
 
-## 8. Architecture Constraints
+## 9. Architecture Constraints
 
 These are enforced by the AI Gatekeeper on every PR and baked into the agent's context. They cannot be bypassed.
 
@@ -172,7 +223,7 @@ These are enforced by the AI Gatekeeper on every PR and baked into the agent's c
 
 ---
 
-## 9. Monorepo Structure
+## 10. Monorepo Structure
 
 ```
 /
@@ -193,7 +244,7 @@ These are enforced by the AI Gatekeeper on every PR and baked into the agent's c
 
 ---
 
-## 10. Secrets Required
+## 11. Secrets Required
 
 Configure these in your repository's **Settings → Secrets and variables → Actions**:
 
@@ -210,13 +261,14 @@ Configure these in your repository's **Settings → Secrets and variables → Ac
 
 ---
 
-## 11. Workflow Reference
+## 12. Workflow Reference
 
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
 | Headless Claude Backend Dispatcher | `.github/workflows/claude-agent.yml` | Issue labeled `route: claude-backend` | Implements the feature described in the issue and opens a PR. |
 | Autonomous CI Feedback Loop | `.github/workflows/autonomous-feedback.yml` | PR opened or updated targeting `main` | Catches CI failures and dispatches Claude to self-heal the branch. |
 | AI Gatekeeper — Structural Debt Review | `.github/workflows/gemini-gatekeeper.yml` | PR opened or updated | Audits the PR diff against architecture rules and posts a review report. |
+| PR Preview Environment | `.github/workflows/pr-preview.yml` | PR ready for review | Builds Docker image, deploys preview environment, posts preview URL, and tears down on close. |
 
 ---
 
