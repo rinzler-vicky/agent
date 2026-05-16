@@ -32,22 +32,24 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
-          RENDER_BUILD_COMMAND: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @agent/backend build
-          RENDER_START_COMMAND: pnpm --filter @agent/backend start
+          BACKEND_WORKSPACE: "@agent/backend"
         run: |
           set -euo pipefail
 
           RENDER_API_BASE='https://api.render.com/v1'
+          RENDER_BUILD_COMMAND="corepack enable && pnpm install --frozen-lockfile && pnpm --filter ${BACKEND_WORKSPACE} build"
+          RENDER_START_COMMAND="pnpm --filter ${BACKEND_WORKSPACE} start"
+
           SERVICE="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
-          SERVICE_REPO="$(echo "${SERVICE}" | jq -r '.repo // empty')"
+          SERVICE_REPO="$(echo "${SERVICE}" | jq -r '.repo // .service.repo // empty')"
 
           if [ -z "${SERVICE_REPO}" ]; then
             echo "Render service is not Git-backed; skipping build/start command sync."
             exit 0
           fi
 
-          CURRENT_BUILD="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.buildCommand // empty')"
-          CURRENT_START="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.startCommand // empty')"
+          CURRENT_BUILD="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.buildCommand // .serviceDetails.buildCommand // empty')"
+          CURRENT_START="$(echo "${SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.startCommand // .serviceDetails.startCommand // empty')"
 
           if [ "${CURRENT_BUILD}" = "${RENDER_BUILD_COMMAND}" ] && [ "${CURRENT_START}" = "${RENDER_START_COMMAND}" ]; then
             echo "Render build/start commands already match expected values."
@@ -61,11 +63,22 @@ jobs:
               '{serviceDetails:{envSpecificDetails:{buildCommand:$build,startCommand:$start}}}'
           )"
 
-          curl -fsSL -X PATCH \
+          PATCH_RESPONSE="$(curl -fsSL -X PATCH \
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
             -H "Content-Type: application/json" \
             --data "${PAYLOAD}" \
-            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}" >/dev/null
+            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
+
+          UPDATED_SERVICE="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
+          UPDATED_BUILD="$(echo "${UPDATED_SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.buildCommand // .serviceDetails.buildCommand // empty')"
+          UPDATED_START="$(echo "${UPDATED_SERVICE}" | jq -r '.serviceDetails.envSpecificDetails.startCommand // .serviceDetails.startCommand // empty')"
+
+          if [ "${UPDATED_BUILD}" != "${RENDER_BUILD_COMMAND}" ] || [ "${UPDATED_START}" != "${RENDER_START_COMMAND}" ]; then
+            echo "Render build/start command sync verification failed."
+            echo "PATCH response:"
+            echo "${PATCH_RESPONSE}"
+            exit 1
+          fi
 
           echo "Updated Render build/start commands for backend workspace."
 
