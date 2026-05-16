@@ -109,10 +109,12 @@ jobs:
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
             "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}/env-vars")"
 
-          HAS_JWT="$(echo "${CURRENT_ENV_VARS}" | jq -r '[.[] | select(.envVar.key == "JWT_SECRET")] | length')"
+          JWT_VALUE="$(echo "${CURRENT_ENV_VARS}" | jq -r '[.[] | select(.envVar.key == "JWT_SECRET") | .envVar.value][0] // empty')"
 
-          if [ "${HAS_JWT}" != "0" ]; then
-            echo "JWT_SECRET already set on Render service."
+          if [ -n "${JWT_VALUE}" ] && \
+             [ "${JWT_VALUE}" != "change-me-in-production" ] && \
+             [ "${JWT_VALUE}" != "change-me-in-production-min-32-chars" ]; then
+            echo "JWT_SECRET already set to a non-placeholder value on Render service."
             exit 0
           fi
 
@@ -121,7 +123,11 @@ jobs:
           UPDATED_ENV_VARS="$(echo "${CURRENT_ENV_VARS}" | jq \
             --arg key "JWT_SECRET" \
             --arg val "${JWT_SECRET}" \
-            '[.[] | {key: .envVar.key, value: .envVar.value}] + [{key: $key, value: $val}]')"
+            '
+              [.[] | {key: .envVar.key, value: .envVar.value}]
+              | map(select(.key != $key))
+              + [{key: $key, value: $val}]
+            ')"
 
           curl -fsSL -X PUT \
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
