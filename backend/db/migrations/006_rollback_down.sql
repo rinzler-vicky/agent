@@ -1,0 +1,16 @@
+-- Drop in reverse dependency order
+DROP TABLE IF EXISTS audit_events CASCADE;
+DROP TABLE IF EXISTS workflow_adapter_artifacts CASCADE;
+DROP TABLE IF EXISTS workflow_versions CASCADE;
+DROP TABLE IF EXISTS workflow_defs CASCADE;
+DROP TABLE IF EXISTS prompt_versions CASCADE;
+DROP TABLE IF EXISTS prompt_templates CASCADE;
+DROP TABLE IF EXISTS persona_versions CASCADE;
+DROP TABLE IF EXISTS personas CASCADE;
+DROP TABLE IF EXISTS service_accounts CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS workspaces CASCADE;
+DROP TABLE IF EXISTS tenants CASCADE;
+DROP FUNCTION IF EXISTS next_version_number CASCADE;
+DROP EXTENSION IF EXISTS vector;
+DROP EXTENSION IF EXISTS "uuid-ossp";

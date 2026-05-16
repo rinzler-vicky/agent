@@ -6,7 +6,7 @@ active_domain: backend
 This file serves as the hot memory. Read at the start of every execution; update before opening a Pull Request.
 
 ## Current Objective
-Complete comprehensive architecture documentation and phased implementation plan for the agentic backend harness system.
+Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase 1b integration tests and Neon provisioning.
 
 ## Decisions Made
 * Established separate architectural files for frontend and backend to limit context window pollution.
@@ -17,31 +17,38 @@ Complete comprehensive architecture documentation and phased implementation plan
 * Defined 9-phase implementation strategy with clear tasks, acceptance criteria, and learning outcomes.
 * Established workflow-first execution model where all non-trivial requests become task graphs then workflow runs.
 * Documented governed self-modification model with four mutation classes (A through D) for controlled agent evolution.
+* Phase 1 ADR (ADR-0001) accepted: raw pg driver (no ORM), RLS via current_setting('app.tenant_id'), JWT+bcrypt auth, append-only audit rules.
 
 ## Completed Tasks
 * Created backend/docs directory for comprehensive system documentation.
-* Created backend/docs/ARCHITECTURE.md with complete system architecture including:
-  - Technology stack decisions (Neon/Supabase, n8n, Composio, optional LangGraph/Temporal)
-  - Database schema for all core entities (tenants, workflows, memory, connectors, audit, etc.)
-  - API contracts (REST endpoints and streaming events)
-  - Security model with tenant isolation, secret management, and approval gates
-  - Memory model with three tiers (working, long-term, reflective)
-  - Observability and debugging specifications
-  - Plugin and extension model
-* Created backend/docs/IMPLEMENTATION_PLAN.md with 9-phase implementation roadmap including:
-  - Phase 1: Foundation & Database Layer (4-6 weeks)
-  - Phase 2: Workflow Control Plane (6-8 weeks)
-  - Phase 3: Connector & Tool Layer (4-5 weeks)
-  - Phase 4: Memory & Agent Runtime (5-6 weeks)
-  - Phase 5: Governance & Mutation Control (3-4 weeks)
-  - Phase 6: Observability & Debugging (4-5 weeks)
-  - Phase 7: Testing, Evaluation & CI/CD (3-4 weeks)
-  - Phase 8: Hardening & Production Readiness (4-5 weeks)
-  - Phase 9: Advanced Features - Optional (6-8 weeks)
-  - Each phase includes: Tasks, Acceptance Criteria, Learning Outcomes, and Deliverables
+* Created backend/docs/ARCHITECTURE.md with complete system architecture.
+* Created backend/docs/IMPLEMENTATION_PLAN.md with 9-phase implementation roadmap.
+* Drafted and recorded ADR-0001 for Phase 1 (docs/adr/ADR-0001-phase-1-foundation-database-layer.md).
+* Created database migrations (backend/db/migrations/ — 001..006 SQL files):
+  - 001: pgvector + uuid-ossp extensions
+  - 002: Core identity schema (tenants, workspaces, users, service_accounts)
+  - 003: RLS policies for tenant isolation
+  - 004: Configuration tables (personas, prompt_templates, workflow_defs) with immutable versioning triggers
+  - 005: append-only audit_events table
+  - 006: Down/rollback migration
+* Scaffolded NestJS 10 backend (backend/src/):
+  - main.ts: CORS, Helmet, Swagger, URI versioning, global ValidationPipe
+  - app.module.ts: wiring all modules with TenantMiddleware
+  - DatabaseModule: global pg Pool via DATABASE_POOL injection token
+  - HealthModule: /v1/health and /v1/health/version endpoints
+  - AuthModule: JWT strategy, JwtAuthGuard, AuthService (login + service account validation)
+  - TenantMiddleware: extracts tenantId from JWT or x-tenant-id+x-api-key headers
+  - TenantsModule: CRUD service + controller (guarded by JWT)
+  - AuditModule: append-only audit log service
+  - StorageModule: S3 pre-signed upload/download URL generation with MIME allowlist
+* Created backend/scripts/migrate.js: simple migration runner tracking applied migrations in schema_migrations table.
+* Created backend/.env.example with all documented env vars.
+* 24/24 unit tests passing (health, tenants, audit, auth, storage services).
 
-## Pending Tasks
-* Review and validate architecture documentation with stakeholders.
-* Begin Phase 1 implementation: Foundation & Database Layer.
-* Provision Neon Postgres instance and configure branching strategy.
-* Set up NestJS project structure with multi-tenancy foundation.
+## Pending Tasks (Phase 1b)
+* Provision Neon Postgres instance and configure database branching strategy.
+* Run integration tests with real Postgres to validate RLS isolation.
+* Set app.tenant_id session variable per database client in DatabaseModule.
+* Add integration/E2E tests (Supertest against live NestJS app).
+* Review ADR-0001 with stakeholders and get formal sign-off.
+* Begin Phase 2: Workflow Control Plane.
