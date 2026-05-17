@@ -53,12 +53,13 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Review ADR-0001 with stakeholders and get formal sign-off.
 * Begin Phase 2: Workflow Control Plane.
 
-## Phase 3 readiness gates (block implementation start)
+## Phase 3 readiness gates (block implementation start/open + merge)
 
-Phase 3 (Connector & Tool Layer) is tracked at #26 with seven child issues #49–#55. No Phase 3 implementation PR may merge until every gate below is ticked.
+Phase 3 (Connector & Tool Layer) is tracked at #26 with seven child issues #49–#55. No Phase 3 implementation PR may be opened or merged until every gate below is ticked.
 
 * [ ] Phase 1b items above closed (Neon, RLS integration tests, `app.tenant_id`, ADR-0001 sign-off).
 * [ ] PR #46 merged (strengthens `01_backend_feature.yml` and adds Phase 2 readiness gates).
 * [ ] Phase 2 fully closed: #25 + all child issues #40 (ADR-0002 accepted), #41, #42, #43, #44, #45.
 * [ ] ADR-0003 drafted and `Status: Accepted` recorded by `rinzler-vicky` (Phase 3 child #49). All 17 open architectural questions enumerated in #26 must have populated options tables and explicit decisions before signoff.
-* [ ] Then begin Phase 3 implementation in the order: #50 (schema) → {#51 (broker), #52 (policy)} → #53 (execution + tool-failure hook) → #54 (`/v1/tool-proposals` endpoint, mirrors Phase 2's `/v1/workflow-proposals`) → #55 (common connectors + branch-preview parity).
+
+After all readiness gates are cleared, execute Phase 3 implementation in this order: #50 (schema) → {#51 (broker), #52 (policy)} → #53 (execution + tool-failure hook) → #54 (`/v1/tool-proposals` endpoint, mirrors Phase 2's `/v1/workflow-proposals`) → #55 (common connectors + branch-preview parity).
