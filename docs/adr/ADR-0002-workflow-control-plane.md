@@ -1,9 +1,10 @@
 # ADR-0002 — Phase 2: Workflow Control Plane (with agent self-modification)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-05-17
+- Accepted: 2026-05-17
 - Related issue(s): #4 (Backend Infra Bootstrapping), #25 (Phase 2: Workflow Control Plane), #47 (ADR draft PR)
-- Deciders: rinzler-vicky (pending), @codex[agent] (draft author)
+- Deciders: rinzler-vicky, @codex[agent] (draft author)
 
 ## Context
 
@@ -238,3 +239,7 @@ Decision details:
 - Validate Neon + Postgres `LISTEN/NOTIFY` behavior under Neon’s operational model (and document fallback if required).
 - Define preview quotas/TTLs and cleanup strategy for Neon branches and preview n8n instances (rate limiting and garbage collection).
 - Define proposal-context size limits and indexing strategy for `proposal_context` JSONB.
+
+## Decision log
+
+- 2026-05-17 — `Status: Accepted`. Accepted by `rinzler-vicky` via verbal authorization during the Phase 2.2 (issue #42) planning session; commit recorded by `@claude-code` on rinzler-vicky's behalf. Unblocks the Phase 2.1–2.5 implementation PR gate stated in issue #25.
