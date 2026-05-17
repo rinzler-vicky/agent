@@ -44,9 +44,15 @@ jobs:
 
       - name: Scan changed controllers
         if: github.event_name == 'pull_request' && steps.changed.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: |
-          # shellcheck disable=SC2086
-          node backend/scripts/check-swagger.js ${{ steps.changed.outputs.files }}
+          # Use xargs so a multi-file list (one path per line) is passed correctly
+          # as separate arguments rather than being word-split from an interpolated
+          # expression, which would execute subsequent paths as shell commands.
+          # -d '\n' treats only newlines as delimiters (safe for paths with spaces).
+          # --no-run-if-empty skips invocation when the list is empty.
+          echo "$CHANGED_FILES" | xargs -d '\n' --no-run-if-empty node backend/scripts/check-swagger.js
 
       - name: Scan all controllers (push to main)
         if: github.event_name == 'push'
