@@ -41,6 +41,18 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       S3_BUCKET: ${S3_BUCKET:-agent-artifacts}
+      # Phase 2 workflow control plane (n8n adapter). Flag defaults to false
+      # so production behavior is unchanged; the overlay at
+      # infra/docker-compose.n8n.yml flips it to true alongside the n8n stack.
+      WORKFLOW_CONTROL_PLANE_ENABLED: ${WORKFLOW_CONTROL_PLANE_ENABLED:-false}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      N8N_API_URL: ${N8N_API_URL:-http://n8n-main:5678/api/v1}
+      N8N_API_KEY: ${N8N_API_KEY}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_WEBHOOK_BASE_URL: ${N8N_WEBHOOK_BASE_URL:-http://backend:3000}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+      N8N_WEBHOOK_CLOCK_SKEW_S: ${N8N_WEBHOOK_CLOCK_SKEW_S:-300}
+      N8N_RECONCILE_TIMEOUT_MS: ${N8N_RECONCILE_TIMEOUT_MS:-2000}
     ports:
       - "${BACKEND_PORT:-3000}:3000"
     networks:

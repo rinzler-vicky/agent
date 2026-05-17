@@ -126,7 +126,8 @@ volumes:
   redis_data:
   n8n_data:
 
-networks:
-  agent-network:
-    external: true
-    name: agent_agent-network
+# Note: `agent-network` is declared by the root docker-compose.yml as a
+# managed bridge. Compose merges top-level network definitions across
+# files, so re-declaring here as `external: true` would conflict. The
+# services below reference `agent-network` and Compose joins them to
+# the root-defined network automatically.

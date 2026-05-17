@@ -29,16 +29,25 @@ n8n editor: <http://localhost:5678> (basic auth: `admin` / value of `N8N_BASIC_A
 
 ### Required environment variables
 
-Set in the repo root `.env`:
+Set in the repo root `.env`. These are referenced by both the n8n overlay
+**and** the backend service in the root `docker-compose.yml` — that's how the
+adapter inside the backend container picks them up. Compose's `.env` file is
+only used for `${VAR}` substitution into a service's `environment:` block;
+unreferenced keys are not magically forwarded to containers, which is why the
+root compose explicitly declares every adapter var it needs:
 
 | Var | Notes |
 | --- | --- |
+| `WORKFLOW_CONTROL_PLANE_ENABLED` | `true` to activate the adapter on the backend (default `false`). |
 | `N8N_ENCRYPTION_KEY` | **Must be identical on `n8n-main` and `n8n-worker`** (per n8n docs). |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | Reused from the root compose. |
 | `N8N_BASIC_AUTH_USER` / `N8N_BASIC_AUTH_PASSWORD` | Editor login. |
 | `N8N_API_KEY` | Issued from the n8n editor (Settings → API). Required by the backend sync service. |
 | `N8N_WEBHOOK_BASE_URL` | URL the n8n pings hit on the backend (e.g. `http://backend:3000`). |
 | `N8N_WEBHOOK_SECRET` | Shared secret baked into compiled workflows; the backend verifies it on every event. |
+| `N8N_WEBHOOK_CLOCK_SKEW_S` | Freshness window for inbound webhook timestamps (default `300`). |
+| `N8N_RECONCILE_TIMEOUT_MS` | Axios timeout for the post-completion `GET /executions/{id}` reconciliation call (default `2000`). |
+| `REDIS_URL` | Defaults to `redis://redis:6379` in the compose stack. |
 
 ### Tear down
 

@@ -160,4 +160,27 @@ describe('N8nWebhookController.receive', () => {
     expect(lockIdx).toBeGreaterThanOrEqual(0);
     expect(dedupeIdx).toBeGreaterThan(lockIdx);
   });
+
+  it('accepts workflow.failed events without runId/tenantId (fix for error-workflow ping path)', async () => {
+    const { controller, queries } = makeController();
+    const failurePayload = {
+      event: 'workflow.failed',
+      timestamp: freshTimestamp(),
+      n8nExecutionId: 'exec-123',
+      payload: { lastNodeExecuted: 'b_http', error: 'boom' },
+    } as any;
+    const r = await controller.receive(SECRET, failurePayload);
+    expect(r.ok).toBe(true);
+    // No DB writes — audit-only path until Phase 2.4 adds the n8n_execution_id
+    // column on workflow_runs that would let us resolve the originating run.
+    expect(queries.some((q) => q.sql.includes('INSERT INTO run_events'))).toBe(false);
+    expect(queries.some((q) => q.sql.includes('UPDATE workflow_runs'))).toBe(false);
+  });
+
+  it('still rejects non-failure events without runId/tenantId', async () => {
+    const { controller } = makeController();
+    await expect(
+      controller.receive(SECRET, { event: 'step.started', timestamp: freshTimestamp() } as any),
+    ).rejects.toThrow(UnauthorizedException);
+  });
 });

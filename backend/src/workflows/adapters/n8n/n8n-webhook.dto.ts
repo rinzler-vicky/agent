@@ -6,19 +6,21 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  * HMAC); this class exists purely to drive /api/docs schema rendering.
  */
 export class N8nWebhookEventDto {
-  @ApiProperty({
-    description: 'UUID of the workflow_runs row this event belongs to.',
+  @ApiPropertyOptional({
+    description:
+      'UUID of the workflow_runs row this event belongs to. Required for every event except `workflow.failed` originating from n8n\'s error workflow, where the Error Trigger node cannot access the main workflow\'s trigger payload.',
     example: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
     format: 'uuid',
   })
-  runId!: string;
+  runId?: string;
 
-  @ApiProperty({
-    description: 'Tenant UUID, embedded by the compiler so the handler can set `app.tenant_id` without a pre-RLS lookup.',
+  @ApiPropertyOptional({
+    description:
+      'Tenant UUID, embedded by the compiler so the handler can set `app.tenant_id` without a pre-RLS lookup. Omitted on `workflow.failed` events from the error workflow (see runId).',
     example: '550e8400-e29b-41d4-a716-446655440000',
     format: 'uuid',
   })
-  tenantId!: string;
+  tenantId?: string;
 
   @ApiProperty({
     description: 'Event type emitted by the n8n ping node.',

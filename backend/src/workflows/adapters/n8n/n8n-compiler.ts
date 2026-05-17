@@ -119,6 +119,7 @@ export function compileToN8n(
   nodes.push(
     pingNode(START_PING, X_OFFSET, 0, opts, {
       event: 'workflow.started',
+      triggerSource: 'manual',
     }),
   );
   addConnection(connections, TRIGGER_NAME, START_PING);
@@ -138,6 +139,7 @@ export function compileToN8n(
       pingNode(preName, baseX + PRE_DX, 0, opts, {
         event: 'step.started',
         stepKey: canonicalId,
+        triggerSource: 'manual',
       }),
     );
     nodes.push(canonicalToN8nNode(node, baseX, 0, opts));
@@ -148,6 +150,7 @@ export function compileToN8n(
         pingNode(postName, baseX + POST_DX, 0, opts, {
           event: 'step.completed',
           stepKey: canonicalId,
+          triggerSource: 'manual',
         }),
       );
       addConnection(connections, canonicalId, postName);
@@ -162,6 +165,7 @@ export function compileToN8n(
   nodes.push(
     pingNode(END_PING, (functionalIds.length + 2) * X_OFFSET, 0, opts, {
       event: 'workflow.completed',
+      triggerSource: 'manual',
     }),
   );
 
@@ -352,6 +356,13 @@ function agentHttpNode(
 interface PingPayload {
   event: string;
   stepKey?: string;
+  /**
+   * Which trigger node feeds runId/tenantId. Main workflow → `__trigger`
+   * (Manual Trigger receives `{ runId, tenantId }` from the Phase 2.4 caller).
+   * Error workflow → `__error_trigger` (Error Trigger; only n8n execution
+   * metadata is available, so runId/tenantId are omitted — see error path).
+   */
+  triggerSource: 'manual' | 'error';
 }
 
 function pingNode(
@@ -361,16 +372,25 @@ function pingNode(
   opts: N8nCompileOptions,
   payload: PingPayload,
 ): N8nNode {
-  // Runtime values (runId, tenantId, n8nExecutionId) come from the trigger
-  // input or n8n's execution context. The backend (Phase 2.4) launches the
-  // workflow with `{ runId, tenantId }` in the trigger payload.
   const bodyObj: Record<string, unknown> = {
-    runId: `={{ $('${TRIGGER_NAME}').item.json.runId }}`,
-    tenantId: `={{ $('${TRIGGER_NAME}').item.json.tenantId }}`,
     event: payload.event,
     timestamp: '={{ $now.toISO() }}',
     n8nExecutionId: '={{ $execution.id }}',
   };
+
+  if (payload.triggerSource === 'manual') {
+    // Manual Trigger receives runId/tenantId from the Phase 2.4 caller.
+    bodyObj.runId = `={{ $('${TRIGGER_NAME}').item.json.runId }}`;
+    bodyObj.tenantId = `={{ $('${TRIGGER_NAME}').item.json.tenantId }}`;
+  } else {
+    // Error Trigger only exposes execution metadata. runId/tenantId aren't
+    // available; the webhook handler resolves them by looking up the
+    // original run via n8nExecutionId (see receive() in the controller).
+    bodyObj.errorDetails = '={{ $json.execution.error || null }}';
+    bodyObj.lastNodeExecuted = '={{ $json.execution.lastNodeExecuted || null }}';
+    bodyObj.failedWorkflowId = '={{ $json.workflow.id }}';
+  }
+
   if (payload.stepKey) bodyObj.stepKey = payload.stepKey;
 
   return {
@@ -414,6 +434,7 @@ function buildErrorWorkflow(opts: N8nCompileOptions): N8nWorkflow {
     },
     pingNode(pingName, X_OFFSET, 0, opts, {
       event: 'workflow.failed',
+      triggerSource: 'error',
     }),
   ];
   const connections: N8nConnections = {};

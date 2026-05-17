@@ -87,6 +87,22 @@ describe('compileToN8n', () => {
     );
   });
 
+  it('error workflow ping reads from __error_trigger, not __trigger (fix for Copilot review on line 417)', () => {
+    const artifact = compileToN8n(compileOk(linear), OPTS);
+    const failurePing = artifact.errorWorkflow.nodes.find((n) => n.name === '__failure_ping')!;
+    const jsonBody = (failurePing.parameters as any).jsonBody as string;
+    // Must NOT reference the main workflow's __trigger node — that node
+    // does not exist in the error workflow's execution context.
+    expect(jsonBody).not.toContain("$('__trigger')");
+    // Must reference data the Error Trigger node actually provides.
+    expect(jsonBody).toContain('$json.execution');
+    expect(jsonBody).toContain('$json.workflow.id');
+    // runId/tenantId are unavailable in the error workflow, so they must
+    // be omitted from the failure payload.
+    expect(jsonBody).not.toMatch(/"runId":/);
+    expect(jsonBody).not.toMatch(/"tenantId":/);
+  });
+
   it('handles a branching topology', () => {
     const artifact = compileToN8n(compileOk(branch), OPTS);
     const names = artifact.workflow.nodes.map((n) => n.name);

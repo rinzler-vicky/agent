@@ -32,7 +32,7 @@ const DEDUPE_NAMESPACE = '7a7c4f1e-3b9e-4f5a-9e3d-c1b2a3d4e5f6';
 
 @ApiTags('n8n-webhooks')
 @ApiExtraModels(N8nWebhookEventDto, N8nWebhookResponseDto)
-@Controller('v1/n8n/webhooks')
+@Controller({ path: 'n8n/webhooks', version: '1' })
 export class N8nWebhookController {
   private readonly logger = new Logger(N8nWebhookController.name);
   private readonly webhookSecret: string;
@@ -75,14 +75,39 @@ export class N8nWebhookController {
     if (!verifyStaticSecret(secretHeader, this.webhookSecret)) {
       throw new UnauthorizedException('Invalid webhook secret');
     }
-    if (!body || typeof body !== 'object' || !body.runId || !body.tenantId || !body.event) {
+    if (!body || typeof body !== 'object' || !body.event) {
+      throw new UnauthorizedException('Malformed payload');
+    }
+    if (!isFresh(body.timestamp, this.clockSkewSeconds)) {
+      throw new UnauthorizedException('Stale timestamp');
+    }
+
+    // The error workflow's Error Trigger cannot access the main workflow's
+    // trigger input, so workflow.failed events arrive without runId/tenantId.
+    // They are valid: route them to the audit log only and return 200.
+    // Phase 2.4 will add an n8n_execution_id column to workflow_runs (pre-
+    // recorded at trigger time) so failure events can be associated with
+    // the originating run inside the proper tenant context.
+    if (body.event === 'workflow.failed' && (!body.runId || !body.tenantId)) {
+      await this.audit.log({
+        actorType: 'system',
+        action: 'n8n.webhook.failure_unassociated',
+        resourceType: 'n8n_execution',
+        resourceId: body.n8nExecutionId ?? 'unknown',
+        metadata: {
+          event: body.event,
+          n8nExecutionId: body.n8nExecutionId,
+          payload: body.payload ?? null,
+        },
+      });
+      return { ok: true };
+    }
+
+    if (!body.runId || !body.tenantId) {
       throw new UnauthorizedException('Malformed payload');
     }
     if (!uuidValidate(body.tenantId) || !uuidValidate(body.runId)) {
       throw new UnauthorizedException('Invalid runId or tenantId');
-    }
-    if (!isFresh(body.timestamp, this.clockSkewSeconds)) {
-      throw new UnauthorizedException('Stale timestamp');
     }
 
     const eventId = uuidv5(
