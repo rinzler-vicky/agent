@@ -19,7 +19,8 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Established workflow-first execution model where all non-trivial requests become task graphs then workflow runs.
 * Documented governed self-modification model with four mutation classes (A through D) for controlled agent evolution.
 * Phase 1 ADR (ADR-0001) accepted: raw pg driver (no ORM), RLS via current_setting('app.tenant_id'), JWT+bcrypt auth, append-only audit rules.
-* PR Preview Environments: Docker-based deployment with GHCR for container registry, Render deployment integration with manual PR preview mode.
+* PR Preview Environments (initial): Docker-based deployment with GHCR for container registry, Render deployment integration with manual PR preview mode. **Superseded by ADR-0002** — see below.
+* **ADR-0002 (proposed, 2026-05-17)**: Render Blueprint (`render.yaml`) + Neon database branching for ephemeral previews. GitHub is source of truth for service shape. `JWT_SECRET` is declared with `generateValue: true` so Render generates per-service secrets atomically — eliminates the imperative-API-patch race that broke PR #36. Per-PR Neon branches via `neondatabase/create-branch-action@v6`. GHCR Docker build removed (was unused by Render).
 
 ## Completed Tasks
 * Created backend/docs directory for comprehensive system documentation.
@@ -47,14 +48,16 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Created backend/.env.example with all documented env vars.
 * 24/24 unit tests passing (health, tenants, audit, auth, storage services).
 * **PR Preview Automation (Issue #35):**
-  - Created backend/Dockerfile: Multi-stage build for NestJS backend with health checks (fixed husky prepare script issue with --ignore-scripts flag)
-  - Created backend/.dockerignore: Optimized Docker context for backend builds
-  - Created docker-compose.yml: Orchestration for backend + PostgreSQL with health checks
-  - Created .dockerignore: Root-level Docker ignore for monorepo context
-  - Created .github/workflows/pr-preview.yml: Automated PR preview deployment workflow with GHCR, Render deployment (johnbeynon/render-deploy-action@v0.0.8), GitHub Deployments API, and peter-evans/create-or-update-comment integration
-  - Configured Render manual PR preview mode with service URL: https://agent-wmia.onrender.com
-  - Created docs/PR_PREVIEWS.md: Comprehensive documentation for PR preview environments
-  - Updated README.md: Added section 7 for PR Preview Environments with quick start guide
+  - Created backend/Dockerfile, backend/.dockerignore, docker-compose.yml, .dockerignore for local Docker testing (still used for local dev; no longer used in CI).
+  - Initial .github/workflows/pr-preview.yml used GHCR + imperative Render API patching for build/start commands and JWT_SECRET generation. **Replaced** by ADR-0002 Blueprint flow on 2026-05-17 (rewritten to do only Neon branch provisioning + DATABASE_URL wiring + URL/health/comment).
+  - Created render.yaml (Render Blueprint) as the declarative source of truth for service shape, env vars, and preview enablement.
+  - Created docs/adr/ADR-0002-render-blueprint-neon-branching.md.
+  - Rewrote docs/PR_PREVIEWS.md to reflect the Blueprint + Neon flow.
+
+## Trial / Errors (Issue #35)
+* **JWT_SECRET race condition.** Imperative `PUT /v1/services/{id}/env-vars` against the Render base service races Render's auto-deploy. Render boots the new commit before the env-var lands, bootstrap guard at `backend/src/main.ts:13-19` throws, deploy fails. Observed on PR #36 commit cbf9c2c. **Fix:** declare `JWT_SECRET` with `generateValue: true` in render.yaml — Render generates per-service at creation time, atomically, pre-boot. Race window does not exist.
+* **`sync: false` env vars do not propagate to preview services.** Initial Blueprint draft placed AWS keys / S3 bucket / CORS as `sync: false` on the service block; this would have required the workflow to re-PUT them on every preview. **Fix:** moved shared secrets into an `envVarGroups: agent-shared` block; group references propagate.
+* **Docker build to GHCR was dead weight.** Render does its own git+pnpm build per the start command, never consumed the GHCR image. **Fix:** removed all docker buildx / login / build / push steps from the workflow.
 
 ## Pending Tasks (Phase 1b)
 * Provision Neon Postgres instance and configure database branching strategy.
@@ -64,8 +67,8 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Review ADR-0001 with stakeholders and get formal sign-off.
 * Begin Phase 2: Workflow Control Plane.
 
-## Pending Tasks (PR Preview Automation - Issue #35)
-* Test PR preview workflow with Render deployment (mark PR as ready for review to trigger)
-* Verify preview URLs work correctly with Render service: https://agent-wmia.onrender.com
-* Verify teardown works correctly on PR close/merge
-* Consider migrating to isolated PR environments (Fly.io/Railway) if shared environment becomes limiting
+## Pending Tasks (PR Preview Automation - Issue #35, post ADR-0002)
+* Apply Neon migrations 001..005 to the Neon `main` branch (one-time prerequisite — every preview is a copy-on-write clone of `main`).
+* Connect Render Blueprint: Render Dashboard → New → Blueprint → select repo → provide the four `sync: false` values (DATABASE_URL pointing at Neon main, AWS_*, S3_BUCKET, CORS_ORIGINS).
+* End-to-end verification on a throwaway PR (see ADR-0002 §Test strategy): confirm preview JWT_SECRET differs from base JWT_SECRET (validates `generateValue` per-preview behavior).
+* Get formal sign-off on ADR-0002 (currently Proposed).

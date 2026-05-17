@@ -136,26 +136,20 @@ The AI posts a Markdown review comment on the PR identifying any architectural v
 
 ## 7. PR Preview Environments
 
-Every Pull Request marked as "ready for review" automatically triggers Render PR preview automation so reviewers can validate API behavior before merging.
+Every Pull Request marked as "ready for review" gets a dedicated Render web service with its own auto-generated `JWT_SECRET` and an isolated Neon Postgres branch. Architecture is captured in [ADR-0002](docs/adr/ADR-0002-render-blueprint-neon-branching.md); full setup and runbook in [docs/PR_PREVIEWS.md](docs/PR_PREVIEWS.md).
 
-### How Preview Environments Work
+### Sources of truth
 
-1. **Automatic Deployment**: When a PR is ready for review, a GitHub Actions workflow:
-   - Builds a Docker image of the backend application
-   - Pushes it to GitHub Container Registry (GHCR)
-   - Syncs Render build/start commands for the backend workspace to avoid invalid default builds
-   - Applies the `render-preview` label required for Render manual preview mode
-   - Resolves the preview URL from Render API and posts it to the PR after health checks pass
+- **`render.yaml`** declares the Render service shape (build/start, env vars, preview enablement). `JWT_SECRET` uses `generateValue: true` so Render generates a unique value per service before the first boot.
+- **Neon project** (referenced via `vars.NEON_PROJECT_ID`) holds the Postgres schema on its `main` branch. Each PR gets a copy-on-write child branch.
+- **`.github/workflows/pr-preview.yml`** orchestrates only what the two declarative sources can't: creating the Neon branch, wiring its URL into the Render preview service's `DATABASE_URL`, waiting for `/v1/health`, posting the PR comment, and deleting the Neon branch on PR close.
 
-2. **Preview Validation**:
-   - Health endpoint readiness is verified at `/v1/health` before posting links
-   - API docs are exposed at `/api/docs`
-   - Render handles PR preview lifecycle in manual mode
+### How a preview comes up
 
-3. **Automatic Cleanup**: When the PR is merged or closed:
-   - The preview environment is torn down
-   - All resources are cleaned up
-   - A cleanup notification is posted to the PR
+1. PR ready-for-review → workflow creates Neon branch `preview/pr-<num>` (clone of `main`).
+2. Render creates the preview service automatically from the Blueprint, with its own generated `JWT_SECRET`.
+3. Workflow PUTs the Neon branch URL as `DATABASE_URL` on the preview, triggers a fresh deploy, waits for health, posts a comment with the preview URL and Neon branch name.
+4. PR close → Neon branch is deleted, Render tears down the preview service, GitHub deployment is marked inactive.
 
 ### Using Preview Environments
 
@@ -268,7 +262,7 @@ Configure these in your repository's **Settings → Secrets and variables → Ac
 | Headless Claude Backend Dispatcher | `.github/workflows/claude-agent.yml` | Issue labeled `route: claude-backend` | Implements the feature described in the issue and opens a PR. |
 | Autonomous CI Feedback Loop | `.github/workflows/autonomous-feedback.yml` | PR opened or updated targeting `main` | Catches CI failures and dispatches Claude to self-heal the branch. |
 | AI Gatekeeper — Structural Debt Review | `.github/workflows/gemini-gatekeeper.yml` | PR opened or updated | Audits the PR diff against architecture rules and posts a review report. |
-| PR Preview Environment | `.github/workflows/pr-preview.yml` | PR ready for review | Builds Docker image, deploys preview environment, posts preview URL, and tears down on close. |
+| PR Preview Environment | `.github/workflows/pr-preview.yml` | PR ready for review | Creates a Neon branch for the PR, wires its URL into the Render preview service, posts the preview URL, and deletes the branch on close. (Render Blueprint creates/destroys the preview service itself.) |
 
 ---
 

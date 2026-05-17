@@ -1,5 +1,11 @@
 name: PR Preview Environment
 
+# All Render service shape (build/start commands, JWT_SECRET, preview enablement)
+# is declared in render.yaml at repo root via Render's Blueprint feature. This
+# workflow only handles the one piece Render Blueprint cannot own: provisioning
+# a per-PR Neon database branch and wiring its connection string into the Render
+# preview service.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -9,271 +15,169 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  packages: write
   deployments: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-deploy:
-    name: Build and Deploy Preview
+    name: Provision Neon branch and wire Render preview
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false && github.event.action != 'closed'
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Ensure Render service build/start commands
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
-          BACKEND_WORKSPACE: "@agent/backend"
-          RENDER_INSTALL_COMMAND: corepack enable && pnpm install --frozen-lockfile
-          RENDER_BUILD_SCRIPT: build
-          RENDER_START_SCRIPT: start
-        run: |
-          set -euo pipefail
-
-          RENDER_API_BASE='https://api.render.com/v1'
-          # Render can return command fields either under envSpecificDetails (native env)
-          # or at the serviceDetails root depending on service/runtime shape.
-          BUILD_COMMAND_QUERY='.serviceDetails.envSpecificDetails.buildCommand // .serviceDetails.buildCommand // empty'
-          START_COMMAND_QUERY='.serviceDetails.envSpecificDetails.startCommand // .serviceDetails.startCommand // empty'
-          RENDER_BUILD_COMMAND="${RENDER_INSTALL_COMMAND} && pnpm --filter ${BACKEND_WORKSPACE} ${RENDER_BUILD_SCRIPT}"
-          RENDER_START_COMMAND="pnpm --filter ${BACKEND_WORKSPACE} ${RENDER_START_SCRIPT}"
-
-          SERVICE="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
-          SERVICE_REPO="$(echo "${SERVICE}" | jq -r '.repo // empty')"
-
-          if [ -z "${SERVICE_REPO}" ]; then
-            echo "Render service is not Git-backed; skipping build/start command sync."
-            exit 0
-          fi
-
-          CURRENT_BUILD="$(echo "${SERVICE}" | jq -r "${BUILD_COMMAND_QUERY}")"
-          CURRENT_START="$(echo "${SERVICE}" | jq -r "${START_COMMAND_QUERY}")"
-
-          if [ "${CURRENT_BUILD}" = "${RENDER_BUILD_COMMAND}" ] && [ "${CURRENT_START}" = "${RENDER_START_COMMAND}" ]; then
-            echo "Render build/start commands already match expected values."
-            exit 0
-          fi
-
-          PAYLOAD="$(
-            jq -n \
-              --arg build "${RENDER_BUILD_COMMAND}" \
-              --arg start "${RENDER_START_COMMAND}" \
-              '{serviceDetails:{envSpecificDetails:{buildCommand:$build,startCommand:$start}}}'
-          )"
-          if [ -z "${PAYLOAD}" ]; then
-            echo "Failed to generate Render PATCH payload."
-            exit 1
-          fi
-
-          PATCH_RESPONSE="$(curl -fsSL -X PATCH \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data "${PAYLOAD}" \
-            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
-
-          UPDATED_SERVICE="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}")"
-          UPDATED_BUILD="$(echo "${UPDATED_SERVICE}" | jq -r "${BUILD_COMMAND_QUERY}")"
-          UPDATED_START="$(echo "${UPDATED_SERVICE}" | jq -r "${START_COMMAND_QUERY}")"
-
-          if [ "${UPDATED_BUILD}" != "${RENDER_BUILD_COMMAND}" ] || [ "${UPDATED_START}" != "${RENDER_START_COMMAND}" ]; then
-            echo "Render build/start command sync verification failed after PATCH response was received."
-            echo "PATCH response:"
-            echo "${PATCH_RESPONSE}"
-            echo "Expected build command: ${RENDER_BUILD_COMMAND}"
-            echo "Actual build command: ${UPDATED_BUILD}"
-            echo "Expected start command: ${RENDER_START_COMMAND}"
-            echo "Actual start command: ${UPDATED_START}"
-            exit 1
-          fi
-
-          echo "Updated Render build/start commands for backend workspace."
-
-      - name: Ensure JWT_SECRET is set on Render service
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
-        run: |
-          set -euo pipefail
-          RENDER_API_BASE='https://api.render.com/v1'
-
-          CURRENT_ENV_VARS="$(curl -fsSL \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}/env-vars")"
-
-          JWT_VALUE="$(echo "${CURRENT_ENV_VARS}" | jq -r '[.[] | select(.envVar.key == "JWT_SECRET") | .envVar.value][0] // empty')"
-
-          if [ -n "${JWT_VALUE}" ] && \
-             [ "${JWT_VALUE}" != "change-me-in-production" ] && \
-             [ "${JWT_VALUE}" != "change-me-in-production-min-32-chars" ]; then
-            echo "JWT_SECRET already set to a non-placeholder value on Render service."
-            exit 0
-          fi
-
-          JWT_SECRET="$(openssl rand -hex 32)"
-
-          UPDATED_ENV_VARS="$(echo "${CURRENT_ENV_VARS}" | jq \
-            --arg key "JWT_SECRET" \
-            --arg val "${JWT_SECRET}" \
-            '
-              [.[] | {key: .envVar.key, value: .envVar.value}]
-              | map(select(.key != $key))
-              + [{key: $key, value: $val}]
-            ')"
-
-          curl -fsSL -X PUT \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data "${UPDATED_ENV_VARS}" \
-            "${RENDER_API_BASE}/services/${RENDER_SERVICE_ID}/env-vars"
-
-          echo "Generated and set JWT_SECRET on Render service."
-
-      - name: Ensure Render manual preview label
-        uses: actions/github-script@v7
+      - name: Create Neon branch
+        id: neon
+        uses: neondatabase/create-branch-action@v6
         with:
-          script: |
-            const labels = context.payload.pull_request.labels.map((label) => label.name);
-            if (!labels.includes('render-preview')) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                labels: ['render-preview'],
-              });
-              core.info('Added render-preview label to trigger Render manual PR preview.');
-            } else {
-              core.info('render-preview label already exists.');
-            }
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch_name: preview/pr-${{ github.event.pull_request.number }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=pr
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./backend/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Resolve Render Preview URL
-        id: preview
+      - name: Wait for Render preview service and set DATABASE_URL
+        id: render
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          RESOLVE_URL_MAX_ATTEMPTS: "30"
-          RESOLVE_URL_RETRY_DELAY_SECONDS: "10"
+          NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
+          DISCOVER_MAX_ATTEMPTS: "30"
+          DISCOVER_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
-
           RENDER_API_BASE='https://api.render.com/v1'
-          BRANCH="${PR_BRANCH}"
+
           if ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
             echo "Invalid PR number: ${PR_NUMBER}"
             exit 1
           fi
-          if [ -z "${BRANCH}" ]; then
+          if [ -z "${PR_BRANCH}" ]; then
             echo "PR branch is empty."
             exit 1
           fi
+          if [ -z "${NEON_DB_URL}" ]; then
+            echo "Neon DB URL is empty — create-branch-action did not return db_url."
+            exit 1
+          fi
 
-          render_api_get() {
-            local endpoint="$1"
-            local label="$2"
-            local response=''
-            if ! response=$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}${endpoint}"); then
-              echo "Render API request failed while fetching ${label} (${endpoint})."
-              exit 1
-            fi
-            echo "${response}"
+          render_get() {
+            curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" "${RENDER_API_BASE}$1"
           }
 
-          BASE_SERVICE="$(render_api_get "/services/${RENDER_SERVICE_ID}" "base service")"
-
+          BASE_SERVICE="$(render_get "/services/${RENDER_SERVICE_ID}")"
           OWNER_ID=$(echo "${BASE_SERVICE}" | jq -r '.ownerId')
-          BASE_URL=$(echo "${BASE_SERVICE}" | jq -r '.serviceDetails.url // empty')
-          if [ -z "${BASE_URL}" ]; then
-            echo "Base Render service URL is not available from Render API; preview URL must be discovered from preview instances."
-          fi
 
+          PREVIEW_ID=''
           PREVIEW_URL=''
-          for attempt in $(seq 1 "${RESOLVE_URL_MAX_ATTEMPTS}"); do
-            SERVICES="$(render_api_get "/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100" "services list")"
+          for attempt in $(seq 1 "${DISCOVER_MAX_ATTEMPTS}"); do
+            SERVICES="$(render_get "/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")"
 
-            PREVIEW_URL=$(echo "${SERVICES}" | jq -r \
+            PREVIEW_ID=$(echo "${SERVICES}" | jq -r \
               --arg parent "${RENDER_SERVICE_ID}" \
-              --arg branch "${BRANCH}" \
-              '[.[] |
-                select((.serviceDetails.parentServer.id // "") == $parent) |
-                select((.branch // "") == $branch) |
-                .serviceDetails.url // empty
+              --arg branch "${PR_BRANCH}" \
+              --arg prNameSuffix "-pr-${PR_NUMBER}" \
+              '[.[] | .service // .
+                | select((.serviceDetails.parentServer.id // "") == $parent)
+                | select(((.branch // "") == $branch) or ((.name // "" | ascii_downcase) | endswith($prNameSuffix)))
+                | .id // empty
               ] | first // empty')
 
-            if [ -z "${PREVIEW_URL}" ]; then
-              PREVIEW_URL=$(echo "${SERVICES}" | jq -r \
-                --arg parent "${RENDER_SERVICE_ID}" \
-                --arg prNameSuffix "-pr-${PR_NUMBER}" \
-                '[.[] |
-                  select((.serviceDetails.parentServer.id // "") == $parent) |
-                  select(((.name // "") | ascii_downcase | endswith($prNameSuffix))) |
-                  .serviceDetails.url // empty
-                ] | first // empty')
-            fi
-
-            if [ -n "${PREVIEW_URL}" ]; then
+            if [ -n "${PREVIEW_ID}" ]; then
               break
             fi
-
-            echo "Preview URL not available yet (attempt ${attempt}/${RESOLVE_URL_MAX_ATTEMPTS}). Retrying..."
-            sleep "${RESOLVE_URL_RETRY_DELAY_SECONDS}"
+            echo "Render preview service not yet visible (attempt ${attempt}/${DISCOVER_MAX_ATTEMPTS}). Retrying..."
+            sleep "${DISCOVER_RETRY_DELAY_SECONDS}"
           done
 
-          if [ -z "${PREVIEW_URL}" ]; then
-            if [ -n "${BASE_URL}" ]; then
-              PREVIEW_URL="${BASE_URL}"
-              echo "Falling back to base Render service URL: ${PREVIEW_URL}"
-            else
-              echo "Unable to resolve a Render preview URL and no base URL is available."
-              exit 1
-            fi
+          if [ -z "${PREVIEW_ID}" ]; then
+            echo "Could not discover a Render preview service for PR #${PR_NUMBER}."
+            echo "Ensure render.yaml has previews.generation=automatic and the Render Blueprint is connected to this repo."
+            exit 1
           fi
 
-          echo "url=${PREVIEW_URL}" >> $GITHUB_OUTPUT
+          echo "Resolved Render preview service: ${PREVIEW_ID}"
+
+          CURRENT_ENV_VARS="$(render_get "/services/${PREVIEW_ID}/env-vars")"
+          CURRENT_DB_URL="$(echo "${CURRENT_ENV_VARS}" | jq -r '[.[] | select(.envVar.key == "DATABASE_URL") | .envVar.value][0] // empty')"
+
+          if [ "${CURRENT_DB_URL}" = "${NEON_DB_URL}" ]; then
+            echo "DATABASE_URL on preview already matches Neon branch URL; no env-var change."
+          else
+            UPDATED_ENV_VARS="$(echo "${CURRENT_ENV_VARS}" | jq \
+              --arg key "DATABASE_URL" \
+              --arg val "${NEON_DB_URL}" \
+              '
+                [.[] | {key: .envVar.key, value: .envVar.value}]
+                | map(select(.key != $key))
+                + [{key: $key, value: $val}]
+              ')"
+
+            curl -fsSL -X PUT \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" \
+              -H "Content-Type: application/json" \
+              --data "${UPDATED_ENV_VARS}" \
+              "${RENDER_API_BASE}/services/${PREVIEW_ID}/env-vars" > /dev/null
+
+            echo "PUT DATABASE_URL on Render preview service ${PREVIEW_ID}."
+
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" \
+              -H "Content-Type: application/json" \
+              --data '{"clearCache":"do_not_clear"}' \
+              "${RENDER_API_BASE}/services/${PREVIEW_ID}/deploys" > /dev/null
+
+            echo "Triggered fresh deploy on Render preview service after env-var update."
+          fi
+
+          PREVIEW_URL=$(render_get "/services/${PREVIEW_ID}" | jq -r '.serviceDetails.url // empty')
+          if [ -z "${PREVIEW_URL}" ]; then
+            echo "Preview service has no URL yet; will resolve in the readiness step."
+          fi
+
+          echo "preview_id=${PREVIEW_ID}" >> "$GITHUB_OUTPUT"
+          echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve preview URL if not yet known
+        id: preview
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          PREVIEW_ID: ${{ steps.render.outputs.preview_id }}
+          PREVIEW_URL_KNOWN: ${{ steps.render.outputs.preview_url }}
+          RESOLVE_URL_MAX_ATTEMPTS: "30"
+          RESOLVE_URL_RETRY_DELAY_SECONDS: "10"
+        run: |
+          set -euo pipefail
+          RENDER_API_BASE='https://api.render.com/v1'
+
+          PREVIEW_URL="${PREVIEW_URL_KNOWN}"
+          if [ -z "${PREVIEW_URL}" ]; then
+            for attempt in $(seq 1 "${RESOLVE_URL_MAX_ATTEMPTS}"); do
+              PREVIEW_URL=$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
+                "${RENDER_API_BASE}/services/${PREVIEW_ID}" | jq -r '.serviceDetails.url // empty')
+              if [ -n "${PREVIEW_URL}" ]; then
+                break
+              fi
+              echo "Preview URL not yet available (attempt ${attempt}/${RESOLVE_URL_MAX_ATTEMPTS}). Retrying..."
+              sleep "${RESOLVE_URL_RETRY_DELAY_SECONDS}"
+            done
+          fi
+
+          if [ -z "${PREVIEW_URL}" ]; then
+            echo "Unable to resolve Render preview URL."
+            exit 1
+          fi
+
+          echo "url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
           echo "Preview URL: ${PREVIEW_URL}"
 
-      - name: Wait for Preview API readiness
+      - name: Wait for preview API readiness
         env:
           PREVIEW_URL: ${{ steps.preview.outputs.url }}
-          API_READY_MAX_ATTEMPTS: "24"
+          API_READY_MAX_ATTEMPTS: "30"
           API_READY_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
@@ -288,25 +192,18 @@ jobs:
           PREVIEW_HOST="${PREVIEW_URL#https://}"
           PREVIEW_HOST="${PREVIEW_HOST%%/*}"
           if [[ "${PREVIEW_HOST}" != *.onrender.com ]]; then
-            echo "Resolved preview URL is not a valid onrender.com URL: ${PREVIEW_URL}"
+            echo "Resolved preview URL is not a Render URL: ${PREVIEW_URL}"
             exit 1
           fi
 
           for attempt in $(seq 1 "${API_READY_MAX_ATTEMPTS}"); do
-            CURL_EXIT=0
-            STATUS=$(curl -sS -o "${HEALTH_FILE}" -w "%{http_code}" "${PREVIEW_URL}/v1/health") || CURL_EXIT=$?
-            if [ "${CURL_EXIT}" -ne 0 ]; then
-              echo "Health check request failed (attempt ${attempt}/${API_READY_MAX_ATTEMPTS}, curl_exit=${CURL_EXIT}). Retrying..."
-              sleep "${API_READY_RETRY_DELAY_SECONDS}"
-              continue
-            fi
-
+            STATUS=$(curl -sS -o "${HEALTH_FILE}" -w "%{http_code}" "${PREVIEW_URL}/v1/health" || true)
             if [ "${STATUS}" = "200" ]; then
               echo "Preview API is ready."
               cat "${HEALTH_FILE}"
+              echo
               exit 0
             fi
-
             echo "Preview API not ready yet (attempt ${attempt}/${API_READY_MAX_ATTEMPTS}, status=${STATUS}). Retrying..."
             sleep "${API_READY_RETRY_DELAY_SECONDS}"
           done
@@ -315,7 +212,6 @@ jobs:
           exit 1
 
       - name: Create GitHub Deployment
-        id: deployment
         uses: actions/github-script@v7
         with:
           script: |
@@ -328,7 +224,7 @@ jobs:
               auto_merge: false,
               required_contexts: [],
               transient_environment: true,
-              production_environment: false
+              production_environment: false,
             });
 
             await github.rest.repos.createDeploymentStatus({
@@ -338,70 +234,66 @@ jobs:
               state: 'success',
               log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               environment_url: '${{ steps.preview.outputs.url }}',
-              description: 'Preview environment deployed'
+              description: 'Preview environment deployed',
             });
 
-            return deployment.data.id;
-
-      - name: Comment PR with Preview URL
+      - name: Comment PR with preview URL
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
+          comment-tag: pr-preview-comment
+          edit-mode: replace
           body: |
-            ## 🚀 Preview Environment Deployed
-
-            Your changes have been deployed to Render!
+            ## 🚀 Preview Environment Ready
 
             **Preview URL:** ${{ steps.preview.outputs.url }}
-            **Docker Image:** `${{ steps.meta.outputs.tags }}`
-            **PR Number:** #${{ github.event.pull_request.number }}
+            **Neon DB branch:** `preview/pr-${{ github.event.pull_request.number }}`
 
-            ### Quick Links
-            - 📚 [API Documentation](${{ steps.preview.outputs.url }}/api/docs)
-            - ❤️ [Health Check](${{ steps.preview.outputs.url }}/v1/health)
+            - 📚 API Docs: ${{ steps.preview.outputs.url }}/api/docs
+            - ❤️ Health: ${{ steps.preview.outputs.url }}/v1/health
 
-            ### Testing this Preview
             ```bash
-            # Health check
             curl ${{ steps.preview.outputs.url }}/v1/health
-
-            # View API docs
-            open ${{ steps.preview.outputs.url }}/api/docs
             ```
 
-            > **Note:** Render manual PR preview mode is enabled.
-            > The `render-preview` label is automatically applied to keep preview provisioning consistent.
-            >
-            > Docker image is available at: `${{ steps.meta.outputs.tags }}`
-          comment-tag: pr-preview-comment
+            > Each preview gets a fresh Neon database branch (copy-on-write clone of `main`)
+            > and a unique `JWT_SECRET` generated by Render Blueprint. Both are cleaned up on PR close.
 
   teardown:
-    name: Teardown Preview
+    name: Tear down preview
     runs-on: ubuntu-latest
     if: github.event.action == 'closed'
 
     steps:
-      - name: Set Environment to Inactive
+      - name: Delete Neon branch
+        uses: neondatabase/delete-branch-action@v3
+        continue-on-error: true
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch: preview/pr-${{ github.event.pull_request.number }}
+
+      - name: Mark GitHub deployment inactive
         uses: actions/github-script@v7
+        continue-on-error: true
         with:
           script: |
             const deployments = await github.rest.repos.listDeployments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              environment: `pr-${context.payload.pull_request.number}`
+              environment: `pr-${context.payload.pull_request.number}`,
             });
-
             for (const deployment of deployments.data) {
               await github.rest.repos.createDeploymentStatus({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 deployment_id: deployment.id,
                 state: 'inactive',
-                description: 'Preview environment torn down'
+                description: 'Preview environment torn down',
               });
             }
 
-      - name: Delete Environment
+      - name: Delete environment
         uses: actions/github-script@v7
         continue-on-error: true
         with:
@@ -410,21 +302,23 @@ jobs:
               await github.rest.repos.deleteAnEnvironment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                environment_name: `pr-${context.payload.pull_request.number}`
+                environment_name: `pr-${context.payload.pull_request.number}`,
               });
             } catch (error) {
               console.log('Environment may not exist or already deleted:', error.message);
             }
 
-      - name: Comment PR Teardown
+      - name: Comment PR teardown
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
+          comment-tag: pr-preview-comment
+          edit-mode: replace
           body: |
             ## 🧹 Preview Environment Torn Down
 
-            The preview environment for this PR has been automatically cleaned up.
+            - Render preview service: deleted by Render (PR closed)
+            - Neon branch `preview/pr-${{ github.event.pull_request.number }}`: deleted
+            - GitHub deployment: marked inactive
 
-            **Status:** Inactive
-            **Reason:** PR was ${{ github.event.pull_request.merged && 'merged' || 'closed' }}
-          comment-tag: pr-preview-comment
+            **Reason:** PR was ${{ github.event.pull_request.merged && 'merged' || 'closed' }}.

@@ -1,330 +1,143 @@
 # PR Preview Environments
 
-This repository automatically deploys ephemeral preview environments for every Pull Request that enters "ready for review" status. Preview environments allow reviewers and stakeholders to test changes in an isolated environment before merging to production.
+Every Pull Request that leaves draft status gets a dedicated preview: a Render web service, its own auto-generated `JWT_SECRET`, and an isolated Postgres database via Neon branching. Previews are torn down automatically when the PR is closed or merged.
 
-## How It Works
-
-### Automatic Deployment
-
-When a PR is marked as "ready for review":
-
-1. **Build**: The backend application is built into a Docker image
-2. **Push**: The image is pushed to GitHub Container Registry (GHCR)
-3. **Deploy**: A unique preview environment is created
-4. **Notify**: A comment is posted on the PR with the preview URL and access instructions
-
-### Automatic Teardown
-
-When a PR is merged or closed:
-
-1. The preview environment is marked as inactive
-2. Associated resources are cleaned up
-3. A teardown comment is posted on the PR
+See `docs/adr/ADR-0002-render-blueprint-neon-branching.md` for the architecture rationale.
 
 ## Architecture
 
-### Components
+Two declarative sources of truth, one orchestration workflow:
 
-- **Backend Service**: NestJS application running in a Docker container
-- **Database**: PostgreSQL (disposable, ephemeral for each preview)
-- **Container Registry**: GitHub Container Registry (GHCR)
-- **Orchestration**: Docker Compose for local testing, GitHub Actions for CI/CD
+- **`render.yaml`** (Render Blueprint) — declares the `agent-backend` web service, the `agent-shared` env group, `previews.generation: automatic`, build/start commands, health check, and all static env vars. `JWT_SECRET` uses `generateValue: true` so Render creates a unique 256-bit base64 secret per service (base and each preview) before the first deploy boots.
+- **Neon project `cold-block-91735878`** (or whatever `vars.NEON_PROJECT_ID` resolves to) — Postgres lives here. The Neon `main` branch holds the canonical schema. Every PR gets a copy-on-write child branch named `preview/pr-<num>`.
+- **`.github/workflows/pr-preview.yml`** — only handles what the two sources above can't: it creates the Neon branch on PR open, discovers the matching Render preview service, PUTs the Neon branch URL as `DATABASE_URL`, triggers a redeploy, waits for `/v1/health`, and comments the preview URL on the PR. On PR close it deletes the Neon branch.
 
-### Environment Isolation
+## First-time setup
 
-Each preview environment is completely isolated with:
+These steps are one-time per repository. After them, every PR provisions a preview with no human intervention.
 
-- Unique subdomain or port
-- Separate database instance
-- Independent environment variables
-- Transient GitHub deployment
+### 1. Create the Neon project
 
-## Using Preview Environments
+1. Neon Console → **New Project**.
+2. Name: `agent`. Postgres version: **16**. Region: pick the one closest to your Render region.
+3. Click **Create Project**. Neon creates a default branch `main` with role `neondb_owner`.
 
-### As a PR Author
+### 2. Apply baseline migrations to the Neon `main` branch
 
-1. Open a Pull Request
-2. Mark it as "ready for review" (remove draft status)
-3. Wait for the automated workflow to complete (~2-5 minutes)
-4. Find the preview URL in the PR comment
-5. Test your changes using the preview URL
-
-### As a Reviewer
-
-1. Navigate to the PR you're reviewing
-2. Find the preview environment comment (posted by github-actions bot)
-3. Click the preview URL to access the deployed application
-4. Test the functionality described in the PR
-5. Access API documentation at `{preview-url}/api/docs`
-6. Check health status at `{preview-url}/v1/health`
-
-### Testing the Preview
-
-The preview comment includes quick testing commands:
+Every preview branch is a copy-on-write clone of `main`, so whatever schema and extensions exist on `main` at branch-creation time are what each preview inherits. Run the migrations once before opening the first PR:
 
 ```bash
-# Health check
-curl https://pr-123.preview.agent.example.com/v1/health
-
-# View API documentation in browser
-open https://pr-123.preview.agent.example.com/api/docs
-
-# Test an authenticated endpoint (example)
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://pr-123.preview.agent.example.com/v1/tenants
+# Copy the connection string from Neon Console → Project → Connection Details
+export DATABASE_URL='postgresql://neondb_owner:...@ep-...neon.tech/neondb?sslmode=require'
+node backend/scripts/migrate.js
 ```
 
-## Local Testing with Docker
+Verify in Neon's SQL Editor:
 
-You can test the Docker setup locally before pushing:
-
-### Prerequisites
-
-- Docker Desktop or Docker Engine
-- Docker Compose
-
-### Steps
-
-1. **Build the image:**
-   ```bash
-   docker build -f backend/Dockerfile -t agent-backend:local .
-   ```
-
-2. **Run with Docker Compose:**
-   ```bash
-   docker-compose up
-   ```
-
-3. **Access the application:**
-   - Backend API: http://localhost:3000
-   - API Docs: http://localhost:3000/api/docs
-   - Health Check: http://localhost:3000/v1/health
-
-4. **Stop and clean up:**
-   ```bash
-   docker-compose down -v
-   ```
-
-### Environment Variables
-
-Create a `.env` file in the root directory for local testing:
-
-```env
-NODE_ENV=production
-PORT=3000
-POSTGRES_DB=agent_db
-POSTGRES_USER=agent
-POSTGRES_PASSWORD=agent_dev_password
-POSTGRES_PORT=5432
-DATABASE_URL=postgresql://agent:agent_dev_password@postgres:5432/agent_db
-JWT_SECRET=local-test-jwt-secret-min-32-characters
-JWT_EXPIRES_IN=1h
-CORS_ORIGINS=http://localhost:3001
+```sql
+SELECT extname FROM pg_extension;          -- should include 'vector' and 'uuid-ossp'
+SELECT count(*) FROM tenants;              -- should return 0 (table exists, no rows)
 ```
 
-## Deployment Options
+### 3. Connect the Neon GitHub Integration
 
-The current workflow builds and pushes Docker images to GHCR and deploys to Render in manual PR preview mode.
+Recommended path — Neon auto-creates the GitHub secret and variable for you:
 
-### Current Configuration: Render (Manual PR Preview Mode)
+1. Neon Console → Project → **Integrations** → GitHub card → **Add**.
+2. **Install GitHub App** → select this repository → **Connect**.
 
-The workflow is configured to deploy to Render using manual PR preview mode:
+Neon then creates in this repo's Settings → Secrets and variables → Actions:
 
-```yaml
-- name: Ensure Render service build/start commands
-  run: |
-    # Syncs Render build/start commands for this monorepo backend
+- `NEON_API_KEY` (secret)
+- `NEON_PROJECT_ID` (variable, e.g., `cold-block-91735878`)
 
-- name: Ensure Render manual preview label
-  uses: actions/github-script@v7
-  with:
-    script: |
-      # Adds `render-preview` label automatically
+*Manual alternative:* Neon Console → Profile (top-right) → **API keys** → New API key. Copy the project ID from Project Settings → General. Add both to the GitHub repo manually.
 
-- name: Resolve Render Preview URL
-  run: |
-    # Polls Render API for the PR preview URL
+### 4. Connect the Render Blueprint
+
+1. Render Dashboard → **New** → **Blueprint**.
+2. Select this repository. Render reads `render.yaml`.
+3. Render shows the services and env groups it will create. Confirm.
+4. Render prompts once for the `sync: false` values:
+   - `DATABASE_URL` (on `agent-backend`) → the Neon `main` branch connection string from step 2.
+   - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET`, `CORS_ORIGINS` (on the `agent-shared` env group).
+5. Click **Apply**. Render creates the env group and the base service, auto-generates `JWT_SECRET`, builds, and deploys.
+
+Verify the base service is healthy: `curl https://<your-service>.onrender.com/v1/health`.
+
+### 5. Required GitHub secrets and variables
+
+After steps 3 and 4 you should see in **Settings → Secrets and variables → Actions**:
+
+| Name | Type | Set by |
+|---|---|---|
+| `RENDER_API_KEY` | Secret | Manual (Render Dashboard → Account Settings → API Keys) |
+| `RENDER_SERVICE_ID` | Secret | Manual (the `srv-…` ID of the `agent-backend` base service) |
+| `NEON_API_KEY` | Secret | Neon GitHub Integration |
+| `NEON_PROJECT_ID` | Variable | Neon GitHub Integration |
+
+## What happens on every PR
+
+1. PR is opened / pushed → `pr-preview.yml` runs.
+2. **Neon branch created**: `preview/pr-<num>` is a copy-on-write clone of `main` — full schema, extensions, and RLS policies inherited.
+3. **Render preview service created** (automatically by Render Blueprint, not by the workflow): a separate service named `agent-backend-pr-<num>` is created with its own auto-generated `JWT_SECRET` and inheriting all `agent-shared` group values.
+4. **Workflow PUTs `DATABASE_URL`** on the preview service (the Neon branch's connection string) and triggers a fresh deploy.
+5. **Workflow waits** for `<preview-url>/v1/health` to return 200.
+6. **Workflow comments** on the PR with the preview URL and Neon branch name.
+
+The first preview deploy may show as "Failed" in Render's deploy log because it boots before the workflow sets `DATABASE_URL`. The next deploy succeeds. PR authors see only the comment on the successful deploy.
+
+## What happens on PR close
+
+1. **Neon branch deleted**: `preview/pr-<num>` is removed (`neondatabase/delete-branch-action`).
+2. **Render preview service deleted**: handled by Render automatically when the PR closes.
+3. **GitHub deployment marked inactive**, environment deleted, teardown comment posted.
+
+## Local testing
+
+For local Docker-based testing (separate from the Render flow):
+
+```bash
+docker compose up
+# Backend: http://localhost:3000
+# Health:  http://localhost:3000/v1/health
+# Docs:    http://localhost:3000/api/docs
 ```
 
-**Current Service URL:** `https://agent-wmia.onrender.com`
-
-**Secrets configured:**
-- `RENDER_API_KEY`: Render API key (configured in repository secrets)
-- `RENDER_SERVICE_ID`: Render service ID (configured in repository secrets)
-
-**How it works:**
-- Workflow enforces Render build/start commands so PR previews build backend correctly in this monorepo (`pnpm` alone fails on Render)
-- Workflow auto-adds the `render-preview` label required by Render manual preview mode
-- Render provisions/updates the PR preview instance from the PR branch
-- Workflow resolves the preview URL through Render API and only comments after `/v1/health` is reachable
-- If a PR-specific preview URL is not yet available, workflow falls back to the base service URL
-
-### Alternative Option 1: Fly.io (For isolated PR environments)
-
-Add Fly.io deployment step:
-
-```yaml
-- name: Deploy to Fly.io
-  uses: superfly/flyctl-actions/setup-flyctl@master
-- run: |
-    flyctl deploy --remote-only \
-      --image ${{ steps.meta.outputs.tags }} \
-      --app agent-pr-${{ github.event.pull_request.number }}
-  env:
-    FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-```
-
-**Secrets needed:**
-- `FLY_API_TOKEN`: Your Fly.io API token
-
-### Alternative Option 2: Railway
-
-Railway has excellent PR preview support:
-
-```yaml
-- name: Deploy to Railway
-  uses: bervProject/railway-deploy@main
-  with:
-    railway_token: ${{ secrets.RAILWAY_TOKEN }}
-    service: backend
-```
-
-**Secrets needed:**
-- `RAILWAY_TOKEN`: Your Railway API token
-
-## Configuration
-
-### Required Secrets
-
-The workflow requires these secrets to be configured in your repository:
-
-| Secret | Required | Purpose |
-|--------|----------|---------|
-| `GITHUB_TOKEN` | Yes (automatic) | Push to GHCR, create deployments |
-| `RENDER_API_KEY` | Yes | Deploy to Render |
-| `RENDER_SERVICE_ID` | Yes | Identify Render service for deployment |
-
-### Optional Secrets (for alternative deployment providers)
-
-If switching to a different deployment provider, configure its secrets:
-
-| Secret | Provider | Purpose |
-|--------|----------|---------|
-| `FLY_API_TOKEN` | Fly.io | Deploy to Fly.io |
-| `RAILWAY_TOKEN` | Railway | Deploy to Railway |
-
-### Workflow Configuration
-
-The workflow is located at `.github/workflows/pr-preview.yml` and can be customized:
-
-- **Triggers**: Currently triggers on PR ready_for_review, opened, synchronize, reopened
-- **Base branch**: Deploys PRs targeting any branch
-- **Build context**: Builds from repository root with backend/Dockerfile
-- **Registry**: Uses GitHub Container Registry (ghcr.io)
+`docker-compose.yml` runs Postgres + the backend container together. Edit env values in the compose file or a sibling `.env`.
 
 ## Troubleshooting
 
-### Build Fails
+### Bootstrap fails with `JWT_SECRET must be set to a strong secret in production`
 
-Check the GitHub Actions logs:
-1. Go to the PR's "Checks" tab
-2. Click on "PR Preview Environment"
-3. Review the build logs
+If you see this on a preview deploy, the Render Blueprint connection is missing or broken. `JWT_SECRET` is supposed to be generated by `render.yaml`'s `generateValue: true`. Check:
 
-Common issues:
-- Missing dependencies in `backend/package.json`
-- TypeScript compilation errors
-- Missing environment variables
+1. Render Dashboard → service → Environment tab → confirm `JWT_SECRET` shows as **Generated**.
+2. Render Dashboard → service → Settings → confirm Blueprint is connected.
+3. If neither holds, re-run the Blueprint connection (step 4 of first-time setup).
 
-### Preview URL Not Working
+### Workflow fails at "Could not discover a Render preview service"
 
-- Verify the deployment provider is configured
-- Check that all required secrets are set
-- Ensure the deployment step completed successfully
-- Review the deployment logs in GitHub Actions
+The Render preview was not created. Either `render.yaml` is missing on the PR branch, or `previews.generation: automatic` was overridden. Confirm `render.yaml` exists on the PR's head commit.
 
-### Database Connection Issues
+### Preview is up but DB queries fail with `relation "tenants" does not exist`
 
-- Verify `DATABASE_URL` is correctly formatted
-- Check PostgreSQL service health in Docker Compose
-- Ensure the backend waits for database readiness
+The Neon `main` branch was not migrated before opening the PR. Apply step 2 of first-time setup against the Neon `main` branch, then close and reopen the PR to provision a fresh preview branch.
 
-### Workflow Not Triggering
+### Workflow fails at "Neon DB URL is empty"
 
-- Ensure the PR is marked as "ready for review" (not draft)
-- Check that the workflow file has no syntax errors
-- Verify repository permissions allow workflow execution
+`NEON_API_KEY` is missing, invalid, or doesn't have access to the project specified by `NEON_PROJECT_ID`. Re-check both values in repo Settings → Secrets and variables → Actions.
 
-## Cost Considerations
+### Hit Neon free-tier branch limit
 
-### Resource Usage
-
-Each preview environment consumes:
-- ~512MB RAM (backend container)
-- ~256MB RAM (PostgreSQL container)
-- ~500MB disk space (images + data)
-- Compute time for build and deployment
-
-### Cost Optimization Strategies
-
-1. **Shared Database**: Use a single PostgreSQL instance with schema isolation
-2. **Auto-Shutdown**: Configure provider to shut down after inactivity
-3. **Limited Lifetime**: Set max TTL for preview environments (e.g., 7 days)
-4. **Concurrent Limit**: Limit number of active preview environments
-5. **On-Demand**: Only deploy when explicitly requested (not on every push)
-
-## Security Considerations
-
-### Environment Isolation
-
-- Each preview uses separate environment variables
-- Database credentials are unique per preview
-- No production data is accessible from previews
-
-### Secrets Management
-
-- Use GitHub Secrets for sensitive values
-- Never commit secrets to the repository
-- Rotate secrets regularly
-- Use minimal permissions for deployment tokens
-
-### Access Control
-
-- Preview URLs should be treated as publicly accessible
-- Implement authentication even in preview environments
-- Consider IP whitelisting for sensitive previews
-- Review PR changes before marking as "ready for review"
-
-## Future Enhancements
-
-Potential improvements to the preview environment system:
-
-- [ ] Add support for frontend preview environments
-- [ ] Implement database seeding with test data
-- [ ] Add smoke tests that run against preview environments
-- [ ] Implement preview environment expiration (auto-cleanup after N days)
-- [ ] Add support for custom preview domains
-- [ ] Implement preview environment cloning for hotfixes
-- [ ] Add Slack/Discord notifications for preview deployments
-- [ ] Implement resource usage monitoring and alerting
-- [ ] Add support for running migrations on preview databases
-- [ ] Implement preview environment snapshots for debugging
-
-## Support
-
-For issues or questions about preview environments:
-
-1. Check the [Troubleshooting](#troubleshooting) section
-2. Review GitHub Actions logs for error details
-3. Open an issue with the `infrastructure` label
-4. Contact the platform team for deployment provider issues
+Neon Free allows ~10 child branches per project. Close stale PRs (which deletes their branches), or upgrade to the Launch plan. The Blueprint's `previews.expireAfterDays: 7` setting also expires unused preview *services* after a week, but does not delete their Neon branches — those need PR closure or manual cleanup from the Neon Console.
 
 ## References
 
-- [Docker Documentation](https://docs.docker.com/)
-- [Docker Compose Documentation](https://docs.docker.com/compose/)
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
-- [Fly.io Deployment](https://fly.io/docs/app-guides/continuous-deployment-with-github-actions/)
-- [Render PR Previews](https://render.com/docs/pull-request-previews)
-- [Railway Deployments](https://docs.railway.app/deploy/deployments)
+- ADR-0002 — `docs/adr/ADR-0002-render-blueprint-neon-branching.md`
+- [Render Blueprint spec](https://render.com/docs/blueprint-spec)
+- [Render preview environments](https://render.com/docs/preview-environments)
+- [Neon branching with GitHub Actions](https://neon.com/docs/guides/branching-github-actions)
+- [Neon GitHub Integration](https://neon.com/docs/guides/neon-github-integration)
+- [`neondatabase/create-branch-action`](https://github.com/neondatabase/create-branch-action)
+- [`neondatabase/delete-branch-action`](https://github.com/neondatabase/delete-branch-action)
