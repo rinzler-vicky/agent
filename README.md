@@ -12,11 +12,12 @@ This project is built and maintained **entirely by AI agents**. There is no manu
 4. [What Happens Next (Fully Automated)](#4-what-happens-next-fully-automated)
 5. [The Autonomous Feedback Loop](#5-the-autonomous-feedback-loop)
 6. [The AI Gatekeeper (Structural Review)](#6-the-ai-gatekeeper-structural-review)
-7. [Repository Memory Files](#7-repository-memory-files)
-8. [Architecture Constraints](#8-architecture-constraints)
-9. [Monorepo Structure](#9-monorepo-structure)
-10. [Secrets Required](#10-secrets-required)
-11. [Workflow Reference](#11-workflow-reference)
+7. [PR Preview Environments](#7-pr-preview-environments)
+8. [Repository Memory Files](#8-repository-memory-files)
+9. [Architecture Constraints](#9-architecture-constraints)
+10. [Monorepo Structure](#10-monorepo-structure)
+11. [Secrets Required](#11-secrets-required)
+12. [Workflow Reference](#12-workflow-reference)
 
 ---
 
@@ -133,7 +134,51 @@ The AI posts a Markdown review comment on the PR identifying any architectural v
 
 ---
 
-## 7. Repository Memory Files
+## 7. PR Preview Environments
+
+Every Pull Request marked as "ready for review" gets a dedicated Render web service with its own auto-generated `JWT_SECRET` and an isolated Neon Postgres branch. Architecture is captured in [ADR-0002](docs/adr/ADR-0002-render-blueprint-neon-branching.md); full setup and runbook in [docs/PR_PREVIEWS.md](docs/PR_PREVIEWS.md).
+
+### Sources of truth
+
+- **`render.yaml`** declares the Render service shape (build/start, env vars, preview enablement). `JWT_SECRET` uses `generateValue: true` so Render generates a unique value per service before the first boot.
+- **Neon project** (referenced via `vars.NEON_PROJECT_ID`) holds the Postgres schema on its `main` branch. Each PR gets a copy-on-write child branch.
+- **`.github/workflows/pr-preview.yml`** orchestrates only what the two declarative sources can't: creating the Neon branch, wiring its URL into the Render preview service's `DATABASE_URL`, waiting for `/v1/health`, posting the PR comment, and deleting the Neon branch on PR close.
+
+### How a preview comes up
+
+1. PR ready-for-review → workflow creates Neon branch `preview/pr-<num>` (clone of `main`).
+2. Render creates the preview service automatically from the Blueprint, with its own generated `JWT_SECRET`.
+3. Workflow PUTs the Neon branch URL as `DATABASE_URL` on the preview, triggers a fresh deploy, waits for health, posts a comment with the preview URL and Neon branch name.
+4. PR close → Neon branch is deleted, Render tears down the preview service, GitHub deployment is marked inactive.
+
+### Using Preview Environments
+
+As a reviewer, you can test any PR by:
+1. Opening the PR on GitHub
+2. Finding the preview URL in the automated comment
+3. Accessing the API at the preview URL
+4. Testing the changes interactively
+
+For detailed documentation, see [docs/PR_PREVIEWS.md](docs/PR_PREVIEWS.md).
+
+### Local Testing
+
+You can also test the Docker setup locally:
+
+```bash
+# Build and run with Docker Compose
+docker-compose up
+
+# Access the backend
+curl http://localhost:3000/v1/health
+
+# View API documentation
+open http://localhost:3000/api/docs
+```
+
+---
+
+## 8. Repository Memory Files
 
 Agents have no persistent memory between runs. These disk-backed files act as the project's shared brain:
 
@@ -151,7 +196,7 @@ When a task is completed, `.agentic/STATE.md` is automatically updated by the ag
 
 ---
 
-## 8. Architecture Constraints
+## 9. Architecture Constraints
 
 These are enforced by the AI Gatekeeper on every PR and baked into the agent's context. They cannot be bypassed.
 
@@ -172,7 +217,7 @@ These are enforced by the AI Gatekeeper on every PR and baked into the agent's c
 
 ---
 
-## 9. Monorepo Structure
+## 10. Monorepo Structure
 
 ```
 /
@@ -193,7 +238,7 @@ These are enforced by the AI Gatekeeper on every PR and baked into the agent's c
 
 ---
 
-## 10. Secrets Required
+## 11. Secrets Required
 
 Configure these in your repository's **Settings → Secrets and variables → Actions**:
 
@@ -210,13 +255,14 @@ Configure these in your repository's **Settings → Secrets and variables → Ac
 
 ---
 
-## 11. Workflow Reference
+## 12. Workflow Reference
 
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
 | Headless Claude Backend Dispatcher | `.github/workflows/claude-agent.yml` | Issue labeled `route: claude-backend` | Implements the feature described in the issue and opens a PR. |
 | Autonomous CI Feedback Loop | `.github/workflows/autonomous-feedback.yml` | PR opened or updated targeting `main` | Catches CI failures and dispatches Claude to self-heal the branch. |
 | AI Gatekeeper — Structural Debt Review | `.github/workflows/gemini-gatekeeper.yml` | PR opened or updated | Audits the PR diff against architecture rules and posts a review report. |
+| PR Preview Environment | `.github/workflows/pr-preview.yml` | PR ready for review | Creates a Neon branch for the PR, wires its URL into the Render preview service, posts the preview URL, and deletes the branch on close. (Render Blueprint creates/destroys the preview service itself.) |
 
 ---
 
@@ -228,4 +274,3 @@ Configure these in your repository's **Settings → Secrets and variables → Ac
 - [ ] Open a GitHub Issue describing the first module to build (see [Section 2](#2-your-only-job-writing-a-good-issue)).
 - [ ] Apply the label `route: claude-backend` to the issue.
 - [ ] Wait for the agent to open a PR, then read the AI gatekeeper report before merging.
-

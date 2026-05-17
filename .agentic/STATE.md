@@ -7,6 +7,7 @@ This file serves as the hot memory. Read at the start of every execution; update
 
 ## Current Objective
 Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase 1b integration tests and Neon provisioning.
+PR Preview Automation — implementing ephemeral environments for pull requests (Issue #35).
 
 ## Decisions Made
 * Established separate architectural files for frontend and backend to limit context window pollution.
@@ -18,6 +19,8 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Established workflow-first execution model where all non-trivial requests become task graphs then workflow runs.
 * Documented governed self-modification model with four mutation classes (A through D) for controlled agent evolution.
 * Phase 1 ADR (ADR-0001) accepted: raw pg driver (no ORM), RLS via current_setting('app.tenant_id'), JWT+bcrypt auth, append-only audit rules.
+* PR Preview Environments (initial): Docker-based deployment with GHCR for container registry, Render deployment integration with manual PR preview mode. **Superseded by ADR-0002** — see below.
+* **ADR-0002 (proposed, 2026-05-17)**: Render Blueprint (`render.yaml`) + Neon database branching for ephemeral previews. GitHub is source of truth for service shape. `JWT_SECRET` is declared with `generateValue: true` so Render generates per-service secrets atomically — eliminates the imperative-API-patch race that broke PR #36. Per-PR Neon branches via `neondatabase/create-branch-action@v6`. GHCR Docker build removed (was unused by Render).
 
 ## Completed Tasks
 * Created backend/docs directory for comprehensive system documentation.
@@ -44,6 +47,20 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Created backend/scripts/migrate.js: simple migration runner tracking applied migrations in schema_migrations table.
 * Created backend/.env.example with all documented env vars.
 * 24/24 unit tests passing (health, tenants, audit, auth, storage services).
+* **PR Preview Automation (Issue #35):**
+  - Created backend/Dockerfile, backend/.dockerignore, docker-compose.yml, .dockerignore for local Docker testing (still used for local dev; no longer used in CI).
+  - Initial .github/workflows/pr-preview.yml used GHCR + imperative Render API patching for build/start commands and JWT_SECRET generation. **Replaced** by ADR-0002 Blueprint flow on 2026-05-17 (rewritten to do only Neon branch provisioning + DATABASE_URL wiring + URL/health/comment).
+  - Created render.yaml (Render Blueprint) as the declarative source of truth for service shape, env vars, and preview enablement.
+  - Created docs/adr/ADR-0002-render-blueprint-neon-branching.md.
+  - Rewrote docs/PR_PREVIEWS.md to reflect the Blueprint + Neon flow.
+
+## Trial / Errors (Issue #35)
+* **JWT_SECRET race condition.** Imperative `PUT /v1/services/{id}/env-vars` against the Render base service races Render's auto-deploy. Render boots the new commit before the env-var lands, bootstrap guard at `backend/src/main.ts:13-19` throws, deploy fails. Observed on PR #36 commit cbf9c2c. **Fix:** declare `JWT_SECRET` with `generateValue: true` in render.yaml — Render generates per-service at creation time, atomically, pre-boot. Race window does not exist.
+* **`sync: false` env vars do not propagate to preview services.** Initial Blueprint draft placed AWS keys / S3 bucket / CORS as `sync: false` on the service block; this would have required the workflow to re-PUT them on every preview. **Fix:** moved shared secrets into an `envVarGroups: agent-shared` block; group references propagate.
+* **Docker build to GHCR was dead weight.** Render does its own git+pnpm build per the start command, never consumed the GHCR image. **Fix:** removed all docker buildx / login / build / push steps from the workflow.
+* **Shipped 89aaf59 without renaming Blueprint service to match existing.** The existing standalone Render service is named `agent` (URL `agent-wmia.onrender.com`), but `render.yaml` declared `agent-backend`. Per Render docs, Blueprint adopts existing services only when names match. Connecting Blueprint as-was would have created a duplicate. Also: removing the old workflow's "Ensure JWT_SECRET" step (race-prone but functional) before Blueprint was connected meant the existing service had no JWT_SECRET source — every push failed bootstrap. **Fix (corrective commit):** renamed service to `agent`, added `.github/workflows/bootstrap-render-base.yml` as a one-shot to set JWT_SECRET via Render API without dashboard clicks, added `timeout-minutes: 20` + reduced polling on pr-preview.yml to prevent indefinite hangs, improved the no-preview-service error message.
+* **Preview service inherited no JWT_SECRET at creation.** When Render auto-creates a preview service (before Blueprint is connected), env vars are copied from the base service at creation time. Preview `agent-pr-36-dejf` was created when base had no JWT_SECRET, so the preview also had none, and bootstrap.guard fired even after the base was fixed. **Fix (a2c0761):** extended pr-preview.yml to set JWT_SECRET on the preview alongside DATABASE_URL when missing or a known placeholder. Becomes a no-op once Blueprint's `generateValue: true` is providing per-preview secrets.
+* **Neon GitHub Integration does not auto-comment on PRs.** User expected a Neon-authored PR comment when `preview/pr-36` was created; none appeared. Verified against https://neon.com/docs/guides/neon-github-integration : the integration installs `NEON_API_KEY` + `NEON_PROJECT_ID` and offers a workflow snippet whose default behavior is create/delete branches only. PR commenting is opt-in via `neondatabase/schema-diff-action@v1`, which only posts when schemas differ. Also: project's default branch is `production` (Console-created, user's case), not `main` as docs claimed. **Fix:** added `expires_at` (14-day safety net) and `schema-diff-action` (with `continue-on-error: true` since zero-diff behavior is undocumented) to pr-preview.yml, enhanced the combined preview-ready PR comment with a Neon section (branch, parent, expiry, console link), corrected `main` → `production` across docs.
 
 ## Pending Tasks (Phase 1b)
 * Provision Neon Postgres instance and configure database branching strategy.
@@ -52,3 +69,9 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Add integration/E2E tests (Supertest against live NestJS app).
 * Review ADR-0001 with stakeholders and get formal sign-off.
 * Begin Phase 2: Workflow Control Plane.
+
+## Pending Tasks (PR Preview Automation - Issue #35, post ADR-0002)
+* Apply Neon migrations 001..005 to the Neon `main` branch (one-time prerequisite — every preview is a copy-on-write clone of `main`).
+* Connect Render Blueprint: Render Dashboard → New → Blueprint → select repo → provide the four `sync: false` values (DATABASE_URL pointing at Neon main, AWS_*, S3_BUCKET, CORS_ORIGINS).
+* End-to-end verification on a throwaway PR (see ADR-0002 §Test strategy): confirm preview JWT_SECRET differs from base JWT_SECRET (validates `generateValue` per-preview behavior).
+* Get formal sign-off on ADR-0002 (currently Proposed).
