@@ -79,10 +79,18 @@ const MULTI_OUTPUT_TYPES = new Set(Object.keys(PORT_INDEX));
  * nodes (branch/loop) route to distinct n8n output indices instead of
  * collapsing onto main[0].
  *
- * Runtime values that vary per execution (runId, tenantId, n8nExecutionId)
- * are emitted as n8n expressions that resolve against the trigger node's
- * input — Phase 2.4 will call `POST /workflows/{id}/run` with these in the
- * trigger payload.
+ * Runtime values that vary per execution are wired as n8n expressions:
+ *   - main workflow pings read `runId` and `tenantId` from the `__trigger`
+ *     node's input (Phase 2.4 will call `POST /workflows/{id}/run` with
+ *     these in the trigger payload);
+ *   - the error workflow's failure ping reads `n8nExecutionId` from
+ *     `$execution.id` and surfaces workflow/error context from
+ *     `$json.execution.*` / `$json.workflow.id`. It does NOT carry
+ *     `runId`/`tenantId` (an Error Trigger has no access to the original
+ *     trigger payload), so the webhook handler currently routes those
+ *     events to an audit-only path — Phase 2.4 will add an
+ *     `n8n_execution_id` column pre-recorded at trigger time so failure
+ *     events can be back-resolved to the originating run.
  */
 export function compileToN8n(
   compiled: CompiledWorkflow,

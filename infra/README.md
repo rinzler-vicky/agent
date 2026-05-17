@@ -38,7 +38,6 @@ root compose explicitly declares every adapter var it needs:
 
 | Var | Notes |
 | --- | --- |
-| `WORKFLOW_CONTROL_PLANE_ENABLED` | `true` to activate the adapter on the backend (default `false`). |
 | `N8N_ENCRYPTION_KEY` | **Must be identical on `n8n-main` and `n8n-worker`** (per n8n docs). |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | Reused from the root compose. |
 | `N8N_BASIC_AUTH_USER` / `N8N_BASIC_AUTH_PASSWORD` | Editor login. |

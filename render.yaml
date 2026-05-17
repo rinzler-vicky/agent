@@ -65,13 +65,6 @@ services:
         value: 'true'
       - key: DB_POOL_MAX
         value: '10'
-      # Phase 2.3 — gates WorkflowsModule (and therefore the n8n webhook
-      # controller). Stays `false` in production until Phase 2 closes; flipped
-      # to `true` on preview deploys so /api/docs surfaces the new route and
-      # in-flight work is visible to reviewers.
-      - key: WORKFLOW_CONTROL_PLANE_ENABLED
-        value: false
-        previewValue: true
       # Set once on the base service (Neon main branch URL).
       # On previews the pr-preview workflow PUTs the per-PR Neon branch URL.
       - key: DATABASE_URL

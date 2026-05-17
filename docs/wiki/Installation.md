@@ -127,6 +127,75 @@ Copy `backend/.env.example` to `backend/.env` and fill in the values before star
 
 ---
 
+## Step 5 — (Optional) n8n Adapter Stack
+
+Phase 2.3 ships an n8n adapter that compiles canonical workflow JSON to
+n8n JSON and syncs it to a local n8n Community Edition instance running
+in queue mode. The stack is defined as a Compose overlay over the root
+`docker-compose.yml` (n8n's internal DB lives on the same Postgres
+server as the canonical app DB but in a separate `n8n` database, per
+ADR-0002).
+
+Mirrors `infra/README.md` — kept here so the wiki is the source of
+truth for installation steps.
+
+### Bring up
+
+```bash
+# 1. Ensure the root stack (postgres + backend) is running
+docker compose up -d postgres
+
+# 2. Bring up the n8n overlay alongside the root file
+docker compose -f docker-compose.yml -f infra/docker-compose.n8n.yml up -d
+```
+
+n8n editor: <http://localhost:5678> (basic auth: `admin` / value of
+`N8N_BASIC_AUTH_PASSWORD`).
+
+### Required environment variables
+
+Set in the repo-root `.env`. The root `docker-compose.yml` explicitly
+forwards every adapter var to the backend container — Compose's `.env`
+file is only used for `${VAR}` substitution and does not magically
+forward unreferenced keys into containers.
+
+| Variable | Purpose |
+| --- | --- |
+| `N8N_ENCRYPTION_KEY` | **Must be identical on `n8n-main` and `n8n-worker`** (per n8n queue-mode docs). |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` | Reused from the root compose (also used to create the `n8n` database). |
+| `N8N_BASIC_AUTH_USER` / `N8N_BASIC_AUTH_PASSWORD` | Editor login. |
+| `N8N_API_URL` | n8n REST API base URL the backend sync service calls. |
+| `N8N_API_KEY` | Issued from the n8n editor (Settings → API). |
+| `N8N_WEBHOOK_BASE_URL` | URL the n8n pings hit on the backend (e.g. `http://backend:3000`). |
+| `N8N_WEBHOOK_SECRET` | Shared secret baked into compiled workflows; the backend verifies it on every event. |
+| `N8N_WEBHOOK_CLOCK_SKEW_S` | Freshness window for inbound webhook timestamps (default `300`). |
+| `N8N_RECONCILE_TIMEOUT_MS` | Axios timeout for the post-completion reconciliation call (default `2000`). |
+| `REDIS_URL` | Defaults to `redis://redis:6379` inside the compose stack. |
+
+The webhook controller refuses requests with a 401 when
+`N8N_WEBHOOK_SECRET` is unset; the sync service throws if any of
+`N8N_API_URL`, `N8N_API_KEY`, `N8N_WEBHOOK_BASE_URL`, or
+`N8N_WEBHOOK_SECRET` are missing. The route is always present in
+`/api/docs` so it is discoverable, but it does nothing until those
+secrets are provided.
+
+### Tear down
+
+```bash
+docker compose -f docker-compose.yml -f infra/docker-compose.n8n.yml down
+# Add -v to wipe Redis + n8n data volumes:
+docker compose -f docker-compose.yml -f infra/docker-compose.n8n.yml down -v
+```
+
+### Version pinning
+
+n8n is pinned to `1.79.0` per ADR-0002 §211. The adapter's determinism
+test asserts byte-stable compiled output, which can shift across n8n
+versions if node `typeVersion` defaults move — so bump the tag
+deliberately.
+
+---
+
 ## Environment Variables Reference
 
 All environment variables are documented in `backend/.env.example`. Key variables:
@@ -141,7 +210,6 @@ All environment variables are documented in `backend/.env.example`. Key variable
 | `AWS_SECRET_ACCESS_KEY` | For storage | AWS / S3-compatible secret |
 | `S3_BUCKET` | For storage | S3 bucket name |
 | `S3_ENDPOINT` | No | Override for S3-compatible endpoints (MinIO, R2) |
-| `WORKFLOW_CONTROL_PLANE_ENABLED` | No | Feature flag for Phase 2 workflow engine (default: false) |
 | `REDIS_URL` | For n8n queue | Redis connection string |
 | `N8N_API_URL` | For n8n | n8n API base URL |
 | `N8N_API_KEY` | For n8n | n8n API key |
