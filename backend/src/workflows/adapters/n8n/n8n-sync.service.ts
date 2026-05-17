@@ -74,6 +74,8 @@ export class N8nSyncService {
       // stop working — the pair must be in sync.
       const [remoteMain, remoteError] = await Promise.all([
         this.api.getWorkflow(cached.n8nWorkflowId),
+        // If n8nErrorWorkflowId is absent the error workflow was never synced;
+        // treat it as missing (null) so the pair is recreated together.
         cached.n8nErrorWorkflowId
           ? this.api.getWorkflow(cached.n8nErrorWorkflowId)
           : Promise.resolve(null),
