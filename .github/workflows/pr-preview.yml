@@ -21,6 +21,7 @@ jobs:
   build-and-deploy:
     name: Provision Neon branch and wire Render preview
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event.pull_request.draft == false && github.event.action != 'closed'
 
     steps:
@@ -45,7 +46,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
           NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
-          DISCOVER_MAX_ATTEMPTS: "30"
+          DISCOVER_MAX_ATTEMPTS: "18"
           DISCOVER_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
@@ -94,8 +95,20 @@ jobs:
           done
 
           if [ -z "${PREVIEW_ID}" ]; then
-            echo "Could not discover a Render preview service for PR #${PR_NUMBER}."
-            echo "Ensure render.yaml has previews.generation=automatic and the Render Blueprint is connected to this repo."
+            WAIT_MINUTES=$(( DISCOVER_MAX_ATTEMPTS * DISCOVER_RETRY_DELAY_SECONDS / 60 ))
+            echo "::error::No Render preview service found for PR #${PR_NUMBER} after ${WAIT_MINUTES} min."
+            echo ""
+            echo "Most likely cause: Render Blueprint is not connected to this repo,"
+            echo "so no preview service is being auto-created when PRs open."
+            echo ""
+            echo "Fix:"
+            echo "  1. In Render dashboard: New > Blueprint > select this repository."
+            echo "  2. Render reads render.yaml; the service name 'agent' matches the existing"
+            echo "     service so Blueprint adopts it. Provide values for the prompted"
+            echo "     sync:false env vars when asked."
+            echo "  3. After Blueprint is connected, re-run this workflow."
+            echo ""
+            echo "Full setup runbook: docs/PR_PREVIEWS.md §First-time setup"
             exit 1
           fi
 

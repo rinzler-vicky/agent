@@ -8,7 +8,7 @@ See `docs/adr/ADR-0002-render-blueprint-neon-branching.md` for the architecture 
 
 Two declarative sources of truth, one orchestration workflow:
 
-- **`render.yaml`** (Render Blueprint) — declares the `agent-backend` web service, the `agent-shared` env group, `previews.generation: automatic`, build/start commands, health check, and all static env vars. `JWT_SECRET` uses `generateValue: true` so Render creates a unique 256-bit base64 secret per service (base and each preview) before the first deploy boots.
+- **`render.yaml`** (Render Blueprint) — declares the `agent` web service, the `agent-shared` env group, `previews.generation: automatic`, build/start commands, health check, and all static env vars. `JWT_SECRET` uses `generateValue: true` so Render creates a unique 256-bit base64 secret per service (base and each preview) before the first deploy boots.
 - **Neon project `cold-block-91735878`** (or whatever `vars.NEON_PROJECT_ID` resolves to) — Postgres lives here. The Neon `main` branch holds the canonical schema. Every PR gets a copy-on-write child branch named `preview/pr-<num>`.
 - **`.github/workflows/pr-preview.yml`** — only handles what the two sources above can't: it creates the Neon branch on PR open, discovers the matching Render preview service, PUTs the Neon branch URL as `DATABASE_URL`, triggers a redeploy, waits for `/v1/health`, and comments the preview URL on the PR. On PR close it deletes the Neon branch.
 
@@ -59,11 +59,26 @@ Neon then creates in this repo's Settings → Secrets and variables → Actions:
 2. Select this repository. Render reads `render.yaml`.
 3. Render shows the services and env groups it will create. Confirm.
 4. Render prompts once for the `sync: false` values:
-   - `DATABASE_URL` (on `agent-backend`) → the Neon `main` branch connection string from step 2.
+   - `DATABASE_URL` (on `agent`) → the Neon `main` branch connection string from step 2.
    - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET`, `CORS_ORIGINS` (on the `agent-shared` env group).
 5. Click **Apply**. Render creates the env group and the base service, auto-generates `JWT_SECRET`, builds, and deploys.
 
 Verify the base service is healthy: `curl https://<your-service>.onrender.com/v1/health`.
+
+### 4a. If you already have a standalone Render service named `agent`
+
+Skip this if you don't. Blueprint adopts an existing service when names match — so the service `name: agent` in `render.yaml` will adopt your existing `agent` service rather than create a duplicate.
+
+The existing service's env vars are preserved (Render merges, never silently deletes). `generateValue: true` only generates `JWT_SECRET` if the key doesn't already exist, so a manually-set value survives.
+
+Before connecting Blueprint, if your existing service has been failing with `JWT_SECRET must be set to a strong secret in production`, run the one-shot bootstrap workflow to unblock it:
+
+```bash
+gh workflow run bootstrap-render-base.yml
+gh run watch  # watches the most recent run
+```
+
+That workflow PUTs a fresh `JWT_SECRET` on the service, triggers a redeploy, and waits for `/v1/health` to return 200. Once it succeeds, your existing service is healthy and Blueprint adoption in step 4 will preserve the value.
 
 ### 5. Required GitHub secrets and variables
 
@@ -72,7 +87,7 @@ After steps 3 and 4 you should see in **Settings → Secrets and variables → A
 | Name | Type | Set by |
 |---|---|---|
 | `RENDER_API_KEY` | Secret | Manual (Render Dashboard → Account Settings → API Keys) |
-| `RENDER_SERVICE_ID` | Secret | Manual (the `srv-…` ID of the `agent-backend` base service) |
+| `RENDER_SERVICE_ID` | Secret | Manual (the `srv-…` ID of the `agent` base service) |
 | `NEON_API_KEY` | Secret | Neon GitHub Integration |
 | `NEON_PROJECT_ID` | Variable | Neon GitHub Integration |
 
@@ -80,7 +95,7 @@ After steps 3 and 4 you should see in **Settings → Secrets and variables → A
 
 1. PR is opened / pushed → `pr-preview.yml` runs.
 2. **Neon branch created**: `preview/pr-<num>` is a copy-on-write clone of `main` — full schema, extensions, and RLS policies inherited.
-3. **Render preview service created** (automatically by Render Blueprint, not by the workflow): a separate service named `agent-backend-pr-<num>` is created with its own auto-generated `JWT_SECRET` and inheriting all `agent-shared` group values.
+3. **Render preview service created** (automatically by Render Blueprint, not by the workflow): a separate service named `agent-pr-<num>` is created with its own auto-generated `JWT_SECRET` and inheriting all `agent-shared` group values.
 4. **Workflow PUTs `DATABASE_URL`** on the preview service (the Neon branch's connection string) and triggers a fresh deploy.
 5. **Workflow waits** for `<preview-url>/v1/health` to return 200.
 6. **Workflow comments** on the PR with the preview URL and Neon branch name.
@@ -110,15 +125,23 @@ docker compose up
 
 ### Bootstrap fails with `JWT_SECRET must be set to a strong secret in production`
 
-If you see this on a preview deploy, the Render Blueprint connection is missing or broken. `JWT_SECRET` is supposed to be generated by `render.yaml`'s `generateValue: true`. Check:
+If you see this on the BASE service (not a preview), Blueprint isn't connected yet, or it's connected but `JWT_SECRET` was never generated. Fastest fix: trigger the bootstrap workflow.
+
+```bash
+gh workflow run bootstrap-render-base.yml
+```
+
+For a PREVIEW deploy, the Render Blueprint connection is missing or broken. `JWT_SECRET` is supposed to be generated by `render.yaml`'s `generateValue: true`. Check:
 
 1. Render Dashboard → service → Environment tab → confirm `JWT_SECRET` shows as **Generated**.
 2. Render Dashboard → service → Settings → confirm Blueprint is connected.
-3. If neither holds, re-run the Blueprint connection (step 4 of first-time setup).
+3. If neither holds, connect the Blueprint (step 4 of first-time setup).
 
-### Workflow fails at "Could not discover a Render preview service"
+### Workflow fails at "No Render preview service found for PR #N after 3 min"
 
-The Render preview was not created. Either `render.yaml` is missing on the PR branch, or `previews.generation: automatic` was overridden. Confirm `render.yaml` exists on the PR's head commit.
+The Render preview was not created. Most likely cause: Render Blueprint is not connected to this repo, so Render isn't auto-creating preview services for PRs. Connect Blueprint via the Render dashboard (step 4 of first-time setup), then re-run the workflow.
+
+Less common: `render.yaml` is missing on the PR branch, or `previews.generation: automatic` was removed from the service config. Verify `render.yaml` exists on the PR's head commit.
 
 ### Preview is up but DB queries fail with `relation "tenants" does not exist`
 

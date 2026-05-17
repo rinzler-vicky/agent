@@ -37,7 +37,7 @@ Replace imperative Render API patching with **Render Blueprint** (`render.yaml`)
 
 Concretely:
 
-1. **`render.yaml` at repo root** declares the `agent-backend` web service with `runtime: node`, the exact `pnpm --filter` build/start commands, `healthCheckPath: /v1/health`, and `previews.generation: automatic`.
+1. **`render.yaml` at repo root** declares the `agent` web service with `runtime: node`, the exact `pnpm --filter` build/start commands, `healthCheckPath: /v1/health`, and `previews.generation: automatic`. The service is named `agent` (not `agent-backend`) so that connecting Blueprint to a repo with an existing standalone `agent` service causes Render to **adopt** that service rather than create a duplicate (Blueprint matches services by name).
 2. **`JWT_SECRET` is declared with `generateValue: true`.** Render generates a unique 256-bit base64 value per service (base and each preview) at service-creation time, before the first deploy boots. This is what eliminates the race.
 3. **An `envVarGroups: agent-shared` block** holds AWS credentials, S3 bucket, and CORS origins. Group references propagate to preview services automatically; `sync: false` env vars declared directly on a service do not.
 4. **`DATABASE_URL` stays `sync: false`** on the service — set once in the Render dashboard for the base service (pointing at the Neon `main` branch), and for previews it is set by the workflow after Render creates the preview service.
@@ -107,7 +107,20 @@ End-to-end on a throwaway branch before merging:
 4. Push another commit → preview redeploys; Neon `create-branch-action` returns `created=false` and reuses the branch.
 5. Close PR → Neon branch is deleted; GitHub deployment marked inactive.
 
-## Migration / rollback strategy
+## Migration from an existing standalone Render service
+
+If a standalone (non-Blueprint) Render service named `agent` already exists on the account (created via "New > Web Service" prior to Blueprint adoption), Blueprint adopts it on connection. Per the Render Blueprint spec: "If you add the name of an existing service to your Blueprint file, Render attempts to apply the Blueprint's configuration to that existing service."
+
+Adoption semantics (verified against Render docs):
+
+- **Existing environment variables are preserved.** Render's Blueprint engine merges; it never silently deletes env vars that Blueprint doesn't mention.
+- **`generateValue: true` only generates when the variable doesn't exist.** A manually-set `JWT_SECRET` from before adoption survives. This is what makes the "set JWT_SECRET manually now, connect Blueprint later" sequence safe.
+- **Env group attachment behavior is not explicitly documented.** When Blueprint declares `fromGroup: agent-shared` and the existing service doesn't reference that group, the expected outcome is that the group is attached. Verify after first adoption: if AWS_*/S3_BUCKET/CORS_ORIGINS go missing from the service, manually attach the group in the dashboard or re-add the vars.
+- **Build/start commands documented behavior on adoption is not explicit.** In our case they match what the old workflow already set, so adoption is a no-op for these fields.
+
+To unblock the existing service before Blueprint is connected, trigger the one-shot `.github/workflows/bootstrap-render-base.yml` (`gh workflow run bootstrap-render-base.yml`) which sets a strong `JWT_SECRET` via the Render API and triggers a redeploy. After Blueprint is connected, this workflow is unnecessary — the generated value persists.
+
+## Rollback strategy
 
 This ADR's implementation replaces an unmerged PR's workflow rather than a live production setup. No data migration is required. If the Blueprint approach causes issues after merge:
 

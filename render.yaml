@@ -2,10 +2,12 @@
 #
 # How this gets applied:
 #   1. In Render dashboard: New > Blueprint > select this repo.
-#   2. Render reads this file, creates the `agent-shared` env group and the
-#      `agent-backend` web service, and auto-generates JWT_SECRET per service
-#      (base + each preview). You will be prompted once for the sync:false
-#      values (DATABASE_URL, AWS_*, S3_BUCKET, CORS_ORIGINS).
+#   2. Render reads this file. The service `name: agent` matches the existing
+#      Render service, so Blueprint ADOPTS it (does not create a duplicate).
+#      It creates the `agent-shared` env group, and `generateValue: true` only
+#      generates JWT_SECRET if not already set (so a manually-set value
+#      survives adoption). You'll be prompted once for the sync:false values
+#      (DATABASE_URL, AWS_*, S3_BUCKET, CORS_ORIGINS).
 #   3. From then on, every push to `main` redeploys the base; every PR creates
 #      a per-PR preview service (see .github/workflows/pr-preview.yml for the
 #      Neon branch wiring that completes preview provisioning).
@@ -35,7 +37,7 @@ envVarGroups:
 
 services:
   - type: web
-    name: agent-backend
+    name: agent
     runtime: node
     plan: starter
     region: oregon
