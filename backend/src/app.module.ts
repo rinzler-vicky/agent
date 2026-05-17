@@ -7,8 +7,15 @@ import { AuthModule } from './auth/auth.module';
 import { TenantsModule } from './tenants/tenants.module';
 import { AuditModule } from './audit/audit.module';
 import { StorageModule } from './storage/storage.module';
+import { WorkflowsModule } from './workflows/workflows.module';
 import { TenantMiddleware } from './auth/tenant.middleware';
 
+// WorkflowsModule is imported unconditionally so SwaggerModule can reflect
+// its controllers into /api/docs everywhere. The "feature flag" intent of
+// ADR-0002 is enforced at runtime: N8nWebhookController returns 401 without
+// N8N_WEBHOOK_SECRET, and N8nSyncService.syncPublishedVersion throws via
+// requiredEnv() if its adapter env vars aren't set. See ADR-0002 and the
+// header comment on WorkflowsModule for the full rationale.
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
@@ -19,6 +26,7 @@ import { TenantMiddleware } from './auth/tenant.middleware';
     TenantsModule,
     AuditModule,
     StorageModule,
+    WorkflowsModule,
   ],
 })
 export class AppModule implements NestModule {
