@@ -8,6 +8,8 @@ ALTER TABLE workflow_versions
 -- Add proposal-specific columns for agent-authored drafts
 ALTER TABLE workflow_versions
   ADD COLUMN IF NOT EXISTS parent_version_id UUID REFERENCES workflow_versions(id) ON DELETE SET NULL,
+  -- NOTE: parent_version_id should ideally be constrained to same workflow_def, but would
+  -- require composite keys. Application layer must enforce this invariant.
   ADD COLUMN IF NOT EXISTS proposal_source TEXT,
   ADD COLUMN IF NOT EXISTS proposal_context JSONB,
   ADD COLUMN IF NOT EXISTS proposal_rationale TEXT;
@@ -17,12 +19,16 @@ CREATE TABLE IF NOT EXISTS proposal_triggers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   workflow_run_id UUID NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  -- NOTE: workflow_run_id should ideally be constrained to same tenant, but would require
+  -- composite keys on workflow_runs. RLS policies prevent cross-tenant access.
   step_run_id UUID REFERENCES step_runs(id) ON DELETE SET NULL,
+  -- NOTE: step_run_id should ideally be constrained to belong to workflow_run_id
   error_fingerprint TEXT NOT NULL,
   trigger_context JSONB NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'pending',
   processed_at TIMESTAMPTZ,
   result_version_id UUID REFERENCES workflow_versions(id) ON DELETE SET NULL,
+  -- NOTE: result_version_id should ideally be constrained to same tenant
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

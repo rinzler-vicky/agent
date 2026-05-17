@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS task_graphs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+  -- NOTE: conversation_id should ideally be constrained to same tenant, but would require
+  -- composite keys on conversations table. RLS policies prevent cross-tenant access.
   display_name TEXT NOT NULL,
   description TEXT,
   context JSONB NOT NULL DEFAULT '{}',
@@ -34,6 +36,8 @@ CREATE TABLE IF NOT EXISTS task_edges (
   task_graph_id UUID NOT NULL REFERENCES task_graphs(id) ON DELETE CASCADE,
   from_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   to_task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  -- NOTE: from_task_id and to_task_id should ideally be constrained to belong to task_graph_id,
+  -- but would require composite keys or triggers. Application layer must enforce this invariant.
   edge_type TEXT NOT NULL DEFAULT 'dependency',
   metadata JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

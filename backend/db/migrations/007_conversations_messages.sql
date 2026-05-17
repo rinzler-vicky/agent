@@ -4,6 +4,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   workspace_id UUID REFERENCES workspaces(id) ON DELETE SET NULL,
+  -- NOTE: workspace_id should ideally be constrained to same tenant, but would require
+  -- composite keys on workspaces table (out of scope for this PR). RLS policies prevent
+  -- cross-tenant access at query level.
   title TEXT,
   context JSONB NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'active',
@@ -53,12 +56,19 @@ CREATE INDEX idx_messages_sequence ON messages(conversation_id, sequence_number)
 GRANT SELECT, INSERT, UPDATE, DELETE ON conversations TO app_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO app_user;
 
--- Auto-increment sequence_number trigger for messages
+-- Auto-increment sequence_number trigger for messages with row-level locking
 CREATE OR REPLACE FUNCTION next_message_sequence()
 RETURNS TRIGGER AS $$
 DECLARE
   max_seq INTEGER;
 BEGIN
+  IF NEW.sequence_number IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+
+  -- Lock the conversation row to prevent concurrent sequence conflicts
+  PERFORM 1 FROM conversations WHERE id = NEW.conversation_id FOR UPDATE;
+
   SELECT COALESCE(MAX(sequence_number), 0) INTO max_seq
   FROM messages WHERE conversation_id = NEW.conversation_id;
   NEW.sequence_number := max_seq + 1;
@@ -69,5 +79,4 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER messages_auto_sequence
   BEFORE INSERT ON messages
   FOR EACH ROW
-  WHEN (NEW.sequence_number IS NULL)
   EXECUTE FUNCTION next_message_sequence();

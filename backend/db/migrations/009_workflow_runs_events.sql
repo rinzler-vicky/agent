@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   workflow_version_id UUID NOT NULL REFERENCES workflow_versions(id) ON DELETE RESTRICT,
   conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+  -- NOTE: conversation_id and task_graph_id should ideally be constrained to same tenant,
+  -- but would require composite keys on those tables. RLS policies prevent cross-tenant access.
   task_graph_id UUID REFERENCES task_graphs(id) ON DELETE SET NULL,
   execution_engine TEXT NOT NULL DEFAULT 'n8n_queue',
   status TEXT NOT NULL DEFAULT 'pending',
@@ -37,11 +39,13 @@ CREATE TABLE IF NOT EXISTS step_runs (
 -- run_events table (append-only event log)
 CREATE TABLE IF NOT EXISTS run_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  run_id UUID NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  run_id UUID NOT NULL REFERENCES workflow_runs(id) ON DELETE RESTRICT,
+  -- Changed from CASCADE to RESTRICT to preserve event log even if run is deleted
   sequence INTEGER NOT NULL,
   event_type TEXT NOT NULL,
   event_data JSONB NOT NULL DEFAULT '{}',
   step_run_id UUID REFERENCES step_runs(id) ON DELETE SET NULL,
+  -- NOTE: step_run_id should ideally be constrained to same workflow_run as run_id
   error_fingerprint TEXT,
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(run_id, sequence)
@@ -98,12 +102,19 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON workflow_runs TO app_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON step_runs TO app_user;
 GRANT SELECT, INSERT ON run_events TO app_user;
 
--- Auto-increment sequence trigger for run_events
+-- Auto-increment sequence trigger for run_events with row-level locking
 CREATE OR REPLACE FUNCTION next_event_sequence()
 RETURNS TRIGGER AS $$
 DECLARE
   max_seq INTEGER;
 BEGIN
+  IF NEW.sequence IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+
+  -- Lock the workflow_run row to prevent concurrent sequence conflicts
+  PERFORM 1 FROM workflow_runs WHERE id = NEW.run_id FOR UPDATE;
+
   SELECT COALESCE(MAX(sequence), 0) INTO max_seq
   FROM run_events WHERE run_id = NEW.run_id;
   NEW.sequence := max_seq + 1;
@@ -114,5 +125,4 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER run_events_auto_sequence
   BEFORE INSERT ON run_events
   FOR EACH ROW
-  WHEN (NEW.sequence IS NULL)
   EXECUTE FUNCTION next_event_sequence();
