@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# Block commits that introduce NestJS controllers without OpenAPI annotations.
+# See backend/scripts/check-swagger.js for the rules. Bypassing this hook with
+# --no-verify is forbidden by AGENTS.md "Hard constraints".
+
+staged_controllers=$(git diff --cached --name-only --diff-filter=ACM | grep -E 'backend/src/.*\.controller\.ts$' || true)
+
+if [ -n "$staged_controllers" ]; then
+  # Pass the staged paths through so the script only scans what's changing.
+  # --staged tells the script to read each file's content from the git index
+  # (not the working tree) so the hook validates exactly what will be committed.
+  # shellcheck disable=SC2086
+  node backend/scripts/check-swagger.js --staged $staged_controllers || exit 1
+fi

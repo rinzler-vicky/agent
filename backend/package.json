@@ -9,6 +9,7 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
+    "check:swagger": "node scripts/check-swagger.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
