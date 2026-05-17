@@ -59,6 +59,19 @@ export type N8nWebhookEventType =
   | 'step.started'
   | 'step.completed';
 
+/**
+ * Runtime tuple of every allowed webhook event type.
+ * Derive N8nWebhookEventType from this so there is a single source of truth
+ * that works at both compile time (the union type) and runtime (the array).
+ */
+export const WEBHOOK_EVENT_TYPES = [
+  'workflow.started',
+  'workflow.completed',
+  'workflow.failed',
+  'step.started',
+  'step.completed',
+] as const satisfies ReadonlyArray<N8nWebhookEventType>;
+
 export interface N8nWebhookEvent {
   runId: string;
   tenantId: string;

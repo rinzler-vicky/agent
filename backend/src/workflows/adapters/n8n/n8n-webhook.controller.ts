@@ -26,20 +26,14 @@ import { AuditService } from '@/audit/audit.service';
 import { verifyStaticSecret, isFresh, SECRET_HEADER } from './hmac';
 import { N8nApiClient } from './n8n-api.client';
 import type { N8nWebhookEvent } from './types';
+import { WEBHOOK_EVENT_TYPES } from './types';
 import { N8nWebhookEventDto, N8nWebhookResponseDto } from './n8n-webhook.dto';
 
 const DEDUPE_NAMESPACE = '7a7c4f1e-3b9e-4f5a-9e3d-c1b2a3d4e5f6';
 
-// Exhaustive allow-list mirrors N8nWebhookEventType in types.ts.
-// Validate at the boundary so an unrecognised event value is rejected with 401
-// rather than silently appended to run_events with no status branch applied.
-const ALLOWED_EVENTS = new Set<string>([
-  'workflow.started',
-  'workflow.completed',
-  'workflow.failed',
-  'step.started',
-  'step.completed',
-]);
+// Derived from WEBHOOK_EVENT_TYPES (types.ts) — single source of truth shared
+// by the type union and this runtime allow-list.
+const ALLOWED_EVENTS = new Set<string>(WEBHOOK_EVENT_TYPES);
 
 @ApiTags('n8n-webhooks')
 @ApiExtraModels(N8nWebhookEventDto, N8nWebhookResponseDto)
