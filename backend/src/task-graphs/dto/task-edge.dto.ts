@@ -4,16 +4,16 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class CreateTaskEdgeDto {
   @ApiProperty({ description: 'Source task ID' })
   @IsUUID()
-  from_task_id: string;
+  fromTaskId: string;
 
   @ApiProperty({ description: 'Target task ID' })
   @IsUUID()
-  to_task_id: string;
+  toTaskId: string;
 
   @ApiPropertyOptional({ description: 'Edge type (dependency, conditional, etc.)' })
   @IsString()
   @IsOptional()
-  edge_type?: string;
+  edgeType?: string;
 
   @ApiPropertyOptional({ description: 'Edge metadata' })
   @IsObject()
@@ -23,10 +23,10 @@ export class CreateTaskEdgeDto {
 
 export interface TaskEdge {
   id: string;
-  task_graph_id: string;
-  from_task_id: string;
-  to_task_id: string;
-  edge_type: string;
+  taskGraphId: string;
+  fromTaskId: string;
+  toTaskId: string;
+  edgeType: string;
   metadata: Record<string, any>;
-  created_at: Date;
+  createdAt: Date;
 }

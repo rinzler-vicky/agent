@@ -4,22 +4,22 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class CreateWorkflowRunDto {
   @ApiProperty({ description: 'Workflow version ID to execute' })
   @IsUUID()
-  workflow_version_id: string;
+  workflowVersionId: string;
 
   @ApiPropertyOptional({ description: 'Conversation ID for this run' })
   @IsUUID()
   @IsOptional()
-  conversation_id?: string;
+  conversationId?: string;
 
   @ApiPropertyOptional({ description: 'Task graph ID for this run' })
   @IsUUID()
   @IsOptional()
-  task_graph_id?: string;
+  taskGraphId?: string;
 
   @ApiPropertyOptional({ description: 'Execution engine to use', enum: ['n8n_queue', 'durable'] })
   @IsEnum(['n8n_queue', 'durable'])
   @IsOptional()
-  execution_engine?: 'n8n_queue' | 'durable';
+  executionEngine?: 'n8n_queue' | 'durable';
 
   @ApiPropertyOptional({ description: 'Input data for the workflow' })
   @IsObject()
@@ -41,22 +41,22 @@ export class UpdateWorkflowRunDto {
   @ApiPropertyOptional({ description: 'Error details if run failed' })
   @IsObject()
   @IsOptional()
-  error_details?: Record<string, any>;
+  errorDetails?: Record<string, any>;
 }
 
 export interface WorkflowRun {
   id: string;
-  tenant_id: string;
-  workflow_version_id: string;
-  conversation_id?: string;
-  task_graph_id?: string;
-  execution_engine: string;
+  tenantId: string;
+  workflowVersionId: string;
+  conversationId?: string;
+  taskGraphId?: string;
+  executionEngine: string;
   status: string;
   input: Record<string, any>;
   output?: Record<string, any>;
-  error_details?: Record<string, any>;
-  started_at?: Date;
-  completed_at?: Date;
-  created_at: Date;
-  updated_at: Date;
+  errorDetails?: Record<string, any>;
+  startedAt?: Date;
+  completedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
 }

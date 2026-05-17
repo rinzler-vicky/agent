@@ -19,15 +19,15 @@ export class CreateMessageDto {
   @IsInt()
   @Min(1)
   @IsOptional()
-  sequence_number?: number;
+  sequenceNumber?: number;
 }
 
 export interface Message {
   id: string;
-  conversation_id: string;
-  sequence_number: number;
+  conversationId: string;
+  sequenceNumber: number;
   role: string;
   content: string;
   metadata: Record<string, any>;
-  created_at: Date;
+  createdAt: Date;
 }

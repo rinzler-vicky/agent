@@ -1,18 +1,18 @@
-import { IsString, IsEnum, IsObject, IsOptional, IsUUID } from 'class-validator';
+import { IsString, IsEnum, IsObject, IsOptional } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateTaskDto {
   @ApiProperty({ description: 'Unique key for this task within the graph' })
   @IsString()
-  task_key: string;
+  taskKey: string;
 
   @ApiProperty({ description: 'Display name for the task' })
   @IsString()
-  display_name: string;
+  displayName: string;
 
   @ApiProperty({ description: 'Task type' })
   @IsString()
-  task_type: string;
+  taskType: string;
 
   @ApiPropertyOptional({ description: 'Task configuration' })
   @IsObject()
@@ -24,7 +24,7 @@ export class UpdateTaskDto {
   @ApiPropertyOptional({ description: 'Display name for the task' })
   @IsString()
   @IsOptional()
-  display_name?: string;
+  displayName?: string;
 
   @ApiPropertyOptional({ description: 'Task status' })
   @IsEnum(['pending', 'running', 'completed', 'failed', 'skipped'])
@@ -39,7 +39,7 @@ export class UpdateTaskDto {
   @ApiPropertyOptional({ description: 'Error details if task failed' })
   @IsObject()
   @IsOptional()
-  error_details?: Record<string, any>;
+  errorDetails?: Record<string, any>;
 
   @ApiPropertyOptional({ description: 'Task configuration' })
   @IsObject()
@@ -49,14 +49,14 @@ export class UpdateTaskDto {
 
 export interface Task {
   id: string;
-  task_graph_id: string;
-  task_key: string;
-  display_name: string;
-  task_type: string;
+  taskGraphId: string;
+  taskKey: string;
+  displayName: string;
+  taskType: string;
   config: Record<string, any>;
   status: string;
   result?: Record<string, any>;
-  error_details?: Record<string, any>;
-  created_at: Date;
-  updated_at: Date;
+  errorDetails?: Record<string, any>;
+  createdAt: Date;
+  updatedAt: Date;
 }

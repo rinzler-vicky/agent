@@ -4,7 +4,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class CreateTaskGraphDto {
   @ApiProperty({ description: 'Display name for the task graph' })
   @IsString()
-  display_name: string;
+  displayName: string;
 
   @ApiPropertyOptional({ description: 'Optional description' })
   @IsString()
@@ -14,7 +14,7 @@ export class CreateTaskGraphDto {
   @ApiPropertyOptional({ description: 'Conversation ID this task graph belongs to' })
   @IsUUID()
   @IsOptional()
-  conversation_id?: string;
+  conversationId?: string;
 
   @ApiPropertyOptional({ description: 'Additional context metadata' })
   @IsObject()
@@ -26,7 +26,7 @@ export class UpdateTaskGraphDto {
   @ApiPropertyOptional({ description: 'Display name for the task graph' })
   @IsString()
   @IsOptional()
-  display_name?: string;
+  displayName?: string;
 
   @ApiPropertyOptional({ description: 'Optional description' })
   @IsString()
@@ -46,12 +46,12 @@ export class UpdateTaskGraphDto {
 
 export interface TaskGraph {
   id: string;
-  tenant_id: string;
-  conversation_id?: string;
-  display_name: string;
+  tenantId: string;
+  conversationId?: string;
+  displayName: string;
   description?: string;
   context: Record<string, any>;
   status: string;
-  created_at: Date;
-  updated_at: Date;
+  createdAt: Date;
+  updatedAt: Date;
 }

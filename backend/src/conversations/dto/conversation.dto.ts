@@ -1,11 +1,11 @@
 import { IsString, IsOptional, IsUUID, IsObject, IsEnum } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateConversationDto {
   @ApiPropertyOptional({ description: 'Workspace ID for this conversation' })
   @IsUUID()
   @IsOptional()
-  workspace_id?: string;
+  workspaceId?: string;
 
   @ApiPropertyOptional({ description: 'Title/subject of the conversation' })
   @IsString()
@@ -37,12 +37,12 @@ export class UpdateConversationDto {
 
 export interface Conversation {
   id: string;
-  tenant_id: string;
-  workspace_id?: string;
+  tenantId: string;
+  workspaceId?: string;
   title?: string;
   context: Record<string, any>;
   status: string;
-  created_by_user_id?: string;
-  created_at: Date;
-  updated_at: Date;
+  createdByUserId?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }

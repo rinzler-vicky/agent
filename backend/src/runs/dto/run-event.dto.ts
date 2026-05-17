@@ -4,21 +4,21 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class CreateRunEventDto {
   @ApiProperty({ description: 'Event type' })
   @IsString()
-  event_type: string;
+  eventType: string;
 
   @ApiProperty({ description: 'Event data payload' })
   @IsObject()
-  event_data: Record<string, any>;
+  eventData: Record<string, any>;
 
   @ApiPropertyOptional({ description: 'Step run ID if event relates to a specific step' })
   @IsUUID()
   @IsOptional()
-  step_run_id?: string;
+  stepRunId?: string;
 
   @ApiPropertyOptional({ description: 'Error fingerprint for failure events' })
   @IsString()
   @IsOptional()
-  error_fingerprint?: string;
+  errorFingerprint?: string;
 
   @ApiPropertyOptional({ description: 'Sequence number (auto-generated if not provided)' })
   @IsInt()
@@ -29,11 +29,11 @@ export class CreateRunEventDto {
 
 export interface RunEvent {
   id: string;
-  run_id: string;
+  runId: string;
   sequence: number;
-  event_type: string;
-  event_data: Record<string, any>;
-  step_run_id?: string;
-  error_fingerprint?: string;
-  occurred_at: Date;
+  eventType: string;
+  eventData: Record<string, any>;
+  stepRunId?: string;
+  errorFingerprint?: string;
+  occurredAt: Date;
 }
