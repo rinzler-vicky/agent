@@ -10,3 +10,5 @@ applyTo: "**/{app,pages,components,frontend,web,src}/**/*.{ts,tsx,js,jsx,css,scs
 - Prefer shared/generated types for API data.
 - Add component tests and e2e tests for critical flows.
 - Attach screenshots or visual notes in PRs for visible UI changes.
+- **Update `docs/wiki/Usage.md`** when adding/changing user-facing features or workflows.
+- **Update `docs/wiki/Troubleshooting.md`** when adding client-side error handling or failure modes.
