@@ -1,12 +1,12 @@
 status: IN_PROGRESS
-current_phase: 2.1
+current_phase: 2.4
 active_domain: backend
 
 # AGENT STATE TRACKER
 This file serves as the hot memory. Read at the start of every execution; update before opening a Pull Request.
 
 ## Current Objective
-Phase 2.1 (Execution and Proposal Schema) — implementation complete, pending manual QA and ADR-0002 acceptance.
+Phase 2.4 (#44 — Workflow Lifecycle and Proposal API) — implementation complete; PR open against `main`. Unit + service specs pass (176/176); integration tests parse and require `DATABASE_URL` in CI.
 Phase 1b — pending Neon provisioning and integration test execution.
 
 ## Decisions Made
@@ -48,7 +48,16 @@ Phase 1b — pending Neon provisioning and integration test execution.
 * Created backend/scripts/migrate.js: simple migration runner tracking applied migrations in schema_migrations table. Updated in Phase 2.1 to support multiple rollback files (012_rollback_phase_2_1.sql, 006_rollback_down.sql).
 * Created backend/.env.example with all documented env vars. Updated in Phase 2.1 with WORKFLOW_CONTROL_PLANE_ENABLED flag, Redis, n8n, and Neon API configuration.
 * 24/24 unit tests passing (health, tenants, audit, auth, storage services).
-* **Phase 2.1 (Execution and Proposal Schema) — Issue #[number]:**
+* **Phase 2.4 (Workflow Lifecycle and Proposal API) — Issue #44:**
+  - Added human draft + lifecycle controller (`WorkflowsController`) for `POST /v1/workflows`, `PATCH /v1/workflows/:id`, `POST /v1/workflows/:id/validate`, `POST /v1/workflows/:id/publish` (admin), `POST /v1/workflows/:id/rollback` (admin), `GET /v1/workflows/:id/diff`.
+  - Added agent-facing `ProposalsController` for `POST /v1/workflow-proposals` (service-account JWT + `workflows:propose` scope; 30/min rate limit). Lands draft `workflow_versions` with `proposal_source='failure_recovery'` when `stepRunId` provided, `'agent_reflection'` otherwise. Audit event `workflow.proposal.created` links failing step → new draft via `resource_id`.
+  - Added service-account JWT minting via `POST /v1/auth/service-account/token` (exchanges an API key for a JWT carrying `scopes` from `service_accounts.scopes`).
+  - Added `ServiceAccountScopeGuard` mixin and bound `ThrottlerGuard` via `APP_GUARD` so `@Throttle()` overrides actually enforce (it was previously inert). Fixed global throttler `ttl` to milliseconds (was `60`, now `60_000`).
+  - Added `rfc6902` (dependency-free) as a new production dep for RFC 6902 JSON Patch diff — replaced an initial hand-rolled diff after maintainer feedback.
+  - DTO refresh on `workflow-proposal.dto.ts` to match the #44 field names (`stepRunId`, `workflowRunId`, `errorFingerprint`, `rationale`); `proposal_source` is derived server-side, not exposed to caller.
+  - 176/176 unit tests passing; check:swagger clean; lint clean (no new warnings); build clean.
+  - Documented in `backend/docs/PHASE_2_4_SUMMARY.md` and new wiki page `docs/wiki/Workflow-Control-Plane.md`.
+* **Phase 2.1 (Execution and Proposal Schema) — Issue #41:**
   - Created migrations 007-011 for Phase 2 execution tables:
     - 007: conversations, messages (tenant-scoped, auto-increment sequence)
     - 008: task_graphs, tasks, task_edges (adjacency list with deferrable FK)
