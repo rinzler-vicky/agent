@@ -1,7 +1,6 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
-import * as dotenv from 'dotenv';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
@@ -11,13 +10,17 @@ import { StorageModule } from './storage/storage.module';
 import { WorkflowsModule } from './workflows/workflows.module';
 import { TenantMiddleware } from './auth/tenant.middleware';
 
-// ConfigModule.forRoot loads .env via NestJS DI — too late for module-level
-// constants that are evaluated at import time. Load dotenv explicitly so
-// WORKFLOW_CONTROL_PLANE_ENABLED from a local .env file is visible here.
-dotenv.config();
-const workflowControlPlaneEnabled =
-  process.env.WORKFLOW_CONTROL_PLANE_ENABLED === 'true';
-
+// WorkflowsModule is imported unconditionally so its controllers are
+// reflected in /api/docs everywhere (the previous import-time gate on
+// WORKFLOW_CONTROL_PLANE_ENABLED hid the route from the OpenAPI spec on
+// the Render preview). The "feature flag" intent of ADR-0002 is enforced
+// at runtime instead: N8nWebhookController returns 401 without
+// N8N_WEBHOOK_SECRET, and N8nSyncService.syncPublishedVersion throws via
+// requiredEnv() if the adapter env vars aren't set. Per NestJS docs
+// (openapi/introduction): "the SwaggerModule automatically reflects all
+// of your endpoints" — which it can only do for controllers in the
+// application graph. Removing the import gate puts the controller in the
+// graph everywhere; runtime config decides whether it does anything.
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
@@ -28,7 +31,7 @@ const workflowControlPlaneEnabled =
     TenantsModule,
     AuditModule,
     StorageModule,
-    ...(workflowControlPlaneEnabled ? [WorkflowsModule] : []),
+    WorkflowsModule,
   ],
 })
 export class AppModule implements NestModule {
