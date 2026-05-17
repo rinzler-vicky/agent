@@ -15,6 +15,14 @@ name: Bootstrap Render base service
 
 on:
   workflow_dispatch:
+  # Auto-run on this PR branch so the base service is bootstrapped without
+  # requiring a workflow_dispatch (which needs the file to be on main first).
+  # Remove this push trigger once this PR is merged to main.
+  push:
+    branches:
+      - claude/implement-ephemeral-envs
+    paths:
+      - .github/workflows/bootstrap-render-base.yml
 
 permissions:
   contents: read
