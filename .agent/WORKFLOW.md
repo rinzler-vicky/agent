@@ -36,6 +36,7 @@ Exit criteria:
 Exit criteria:
 - Backend acceptance criteria satisfied.
 - Unit/integration/API/migration checks pass.
+- If any `backend/src/**/*.controller.ts` changed: `pnpm --filter @agent/backend check:swagger` passes.
 - Observability/security notes complete.
 
 ### Phase 3 — Frontend implementation
