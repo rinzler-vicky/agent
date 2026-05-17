@@ -68,6 +68,7 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Set app.tenant_id session variable per database client in DatabaseModule.
 * Add integration/E2E tests (Supertest against live NestJS app).
 * Review ADR-0001 with stakeholders and get formal sign-off.
+* Begin Phase 2: Workflow Control Plane.
 
 ## Pending Tasks (PR Preview Automation - Issue #35, post ADR-0002)
 * Apply Neon migrations 001..005 to the Neon `main` branch (one-time prerequisite — every preview is a copy-on-write clone of `main`).
@@ -80,3 +81,14 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * [ ] Self-evolution #39 merged — `01_backend_feature.yml` strengthened so future phase issues are born meeting Definition of Ready.
 * [ ] ADR-0002 (Workflow Control Plane) drafted with all 11 open questions resolved in the options table, `Status: Accepted` recorded by `rinzler-vicky`. Tracked by the ADR-0002 child issue under #25.
 * [ ] Then: begin Phase 2 implementation per the child issues linked from #25 (execution order: 2.1 schema → 2.2 compiler / 2.3 n8n adapter (parallel) → 2.4 lifecycle+proposal API → 2.5 execution+streaming+previews+failure-hook).
+
+## Phase 3 readiness gates (block implementation start/open + merge)
+
+Phase 3 (Connector & Tool Layer) is tracked at #26 with seven child issues #49–#55. No Phase 3 implementation PR may be opened or merged until every gate below is ticked.
+
+* [ ] Phase 1b items above closed (Neon, RLS integration tests, `app.tenant_id`, ADR-0001 sign-off).
+* [ ] PR #46 merged (strengthens `01_backend_feature.yml` and adds Phase 2 readiness gates).
+* [ ] Phase 2 fully closed: #25 + all child issues #40 (ADR-0002 accepted), #41, #42, #43, #44, #45.
+* [ ] ADR-0003 drafted and `Status: Accepted` recorded by `rinzler-vicky` (Phase 3 child #49). All 17 open architectural questions enumerated in #26 must have populated options tables and explicit decisions before signoff.
+
+After all readiness gates are cleared, execute Phase 3 implementation in this order: #50 (schema) → {#51 (broker), #52 (policy)} → #53 (execution + tool-failure hook) → #54 (`/v1/tool-proposals` endpoint, mirrors Phase 2's `/v1/workflow-proposals`) → #55 (common connectors + branch-preview parity).
