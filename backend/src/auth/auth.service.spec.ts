@@ -58,6 +58,36 @@ describe('AuthService', () => {
     });
   });
 
+  describe('loginServiceAccount', () => {
+    it('mints a JWT with type=service_account, role=service, and scopes from the row', async () => {
+      const sa = {
+        id: 'sa-1',
+        slug: 'agent-bot',
+        tenant_id: 't1',
+        scopes: ['workflows:propose', 'tools:invoke'],
+      };
+      const result = await service.loginServiceAccount(sa);
+      expect(result.access_token).toBe('mock-token');
+      expect(mockJwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sub: 'sa-1',
+          tenantId: 't1',
+          role: 'service',
+          type: 'service_account',
+          scopes: ['workflows:propose', 'tools:invoke'],
+        }),
+      );
+    });
+
+    it('defaults scopes to [] when the service-account row has none', async () => {
+      const sa = { id: 'sa-2', slug: 'limited', tenant_id: 't1' };
+      await service.loginServiceAccount(sa);
+      expect(mockJwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'service_account', scopes: [] }),
+      );
+    });
+  });
+
   describe('validateServiceAccount', () => {
     it('throws UnauthorizedException for missing separator', async () => {
       await expect(service.validateServiceAccount('nodothere'))

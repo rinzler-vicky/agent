@@ -1,43 +1,61 @@
-import { IsString, IsObject, IsOptional, IsUUID, IsEnum } from 'class-validator';
+import { IsString, IsObject, IsOptional, IsUUID, IsEnum, MaxLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+/**
+ * Body for `POST /v1/workflow-proposals`. The agent-facing surface for
+ * Phase 2 self-modification (ARCHITECTURE.md §3, Class C). The endpoint
+ * is locked behind `ServiceAccountScopeGuard('workflows:propose')`; see
+ * `proposals.controller.ts` for the auth chain.
+ *
+ * Field naming follows the camelCase JSON contract used elsewhere on this
+ * API; the issue body uses snake_case (canonical_json, step_run_id, …) as
+ * descriptive prose, not as the wire format.
+ */
 export class CreateWorkflowProposalDto {
-  @ApiProperty({ description: 'Workflow definition ID' })
+  @ApiProperty({ description: 'Workflow definition ID this proposal targets' })
   @IsUUID()
   workflowDefId: string;
 
-  @ApiProperty({ description: 'Parent version ID being modified' })
+  @ApiProperty({ description: 'Parent published version this proposal patches' })
   @IsUUID()
   parentVersionId: string;
 
-  @ApiProperty({ description: 'Workflow specification (canonical JSON)' })
+  @ApiProperty({ description: 'Canonical workflow JSON (validated by the compiler)' })
   @IsObject()
   spec: Record<string, any>;
 
-  @ApiPropertyOptional({ description: 'Proposal source', enum: ['agent', 'human', 'system'] })
-  @IsEnum(['agent', 'human', 'system'])
-  @IsOptional()
-  proposalSource?: 'agent' | 'human' | 'system';
-
-  @ApiPropertyOptional({ description: 'Proposal context metadata' })
-  @IsObject()
-  @IsOptional()
-  proposalContext?: Record<string, any>;
-
-  @ApiPropertyOptional({ description: 'Human-readable rationale for the proposal' })
-  @IsString()
-  @IsOptional()
-  proposalRationale?: string;
-
-  @ApiPropertyOptional({ description: 'Changelog describing changes' })
-  @IsString()
-  @IsOptional()
-  changelog?: string;
-
-  @ApiPropertyOptional({ description: 'Run ID that triggered this proposal' })
+  @ApiPropertyOptional({
+    description:
+      'step_run_id that triggered this proposal. When present, the resulting draft is stored with proposal_source=failure_recovery; when absent, proposal_source=agent_reflection.',
+  })
   @IsUUID()
   @IsOptional()
-  createdFromRunId?: string;
+  stepRunId?: string;
+
+  @ApiPropertyOptional({ description: 'workflow_run_id that contains the failing step (for cross-reference)' })
+  @IsUUID()
+  @IsOptional()
+  workflowRunId?: string;
+
+  @ApiPropertyOptional({ description: 'Stable error fingerprint (e.g. error code + node id)' })
+  @IsString()
+  @IsOptional()
+  @MaxLength(256)
+  errorFingerprint?: string;
+
+  @ApiPropertyOptional({
+    description: 'Free-text rationale explaining why this patch should be applied',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(4096)
+  rationale?: string;
+
+  @ApiPropertyOptional({ description: 'Optional changelog stored on the new draft row' })
+  @IsString()
+  @IsOptional()
+  @MaxLength(2048)
+  changelog?: string;
 }
 
 export class UpdateWorkflowVersionDto {

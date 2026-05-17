@@ -13,6 +13,7 @@ Welcome to the **Agent** wiki. This repository is built and maintained entirely 
 | [Architecture Overview](Architecture-Overview) | System design, layers, and technology choices |
 | [PR Preview Environments](PR-Preview-Environments) | Ephemeral preview deploys per pull request |
 | [Workflow Reference](Workflow-Reference) | GitHub Actions workflows and triggers |
+| [Workflow Control Plane](Workflow-Control-Plane) | HTTP API for the workflow lifecycle and agent-authored proposals |
 | [Contributing](Contributing) | Commit style, PR guidelines, agent governance |
 | [Troubleshooting](Troubleshooting) | Common problems and fixes |
 | [Architecture Decision Records](Architecture-Decision-Records) | ADR index and rationale |

@@ -10,6 +10,7 @@ export interface JwtPayload {
   tenantId: string;
   role: string;
   type: 'user' | 'service_account';
+  scopes?: string[];
 }
 
 @Injectable()
@@ -44,6 +45,23 @@ export class AuthService {
       tenantId: user.tenant_id,
       role: user.role,
       type: 'user',
+    };
+    return { access_token: this.jwtService.sign(payload) };
+  }
+
+  /**
+   * Mint a JWT for a validated service account. Service-account JWTs carry
+   * the `scopes` claim drawn from `service_accounts.scopes`; downstream
+   * guards (e.g. ServiceAccountScopeGuard) gate routes on that claim.
+   */
+  async loginServiceAccount(sa: any) {
+    const payload: JwtPayload = {
+      sub: sa.id,
+      email: sa.slug ?? sa.id,
+      tenantId: sa.tenant_id,
+      role: 'service',
+      type: 'service_account',
+      scopes: Array.isArray(sa.scopes) ? sa.scopes : [],
     };
     return { access_token: this.jwtService.sign(payload) };
   }

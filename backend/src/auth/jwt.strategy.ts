@@ -18,6 +18,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!payload.sub || !payload.tenantId) {
       throw new UnauthorizedException('Invalid token payload');
     }
+    // Passport stores the return value on req.user. Preserving `scopes`
+    // (when present on a service-account token) is what ServiceAccountScopeGuard
+    // reads to gate proposal endpoints.
     return payload;
   }
 }

@@ -1,5 +1,5 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { DATABASE_POOL } from '../database/database.module';
 
 export interface AuditEventData {
@@ -20,8 +20,16 @@ export interface AuditEventData {
 export class AuditService {
   constructor(@Inject(DATABASE_POOL) private readonly pool: Pool) {}
 
-  async log(event: AuditEventData): Promise<void> {
-    await this.pool.query(
+  /**
+   * Append an audit event. Pass an optional `client` to write inside an
+   * existing transaction — required when the audit row must be atomic with
+   * the mutation it describes (see e.g. `ProposalsService.create`, where
+   * losing the audit row breaks the failing-step → draft linkage that the
+   * endpoint is supposed to guarantee).
+   */
+  async log(event: AuditEventData, client?: PoolClient): Promise<void> {
+    const executor = client ?? this.pool;
+    await executor.query(
       `INSERT INTO audit_events
          (tenant_id, actor_id, actor_type, action, resource_type, resource_id,
           before_state, after_state, metadata, ip_address, user_agent)
