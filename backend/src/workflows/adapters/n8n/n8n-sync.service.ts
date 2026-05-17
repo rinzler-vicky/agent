@@ -1,0 +1,218 @@
+import { Injectable, Inject, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Pool } from 'pg';
+import { DATABASE_POOL } from '@/database/database.module';
+import { AuditService } from '@/audit/audit.service';
+import { compile } from '@/workflows/canonical';
+import { compileToN8n } from './n8n-compiler';
+import { N8nApiClient, N8nApiError } from './n8n-api.client';
+import type { N8nCompiledArtifact } from './types';
+
+export interface SyncResult {
+  workflowVersionId: string;
+  n8nWorkflowId: string;
+  n8nErrorWorkflowId: string;
+  canonicalHash: string;
+  action: 'skipped' | 'created' | 'updated' | 'recreated';
+}
+
+@Injectable()
+export class N8nSyncService {
+  private readonly logger = new Logger(N8nSyncService.name);
+
+  constructor(
+    @Inject(DATABASE_POOL) private readonly pool: Pool,
+    @Inject(ConfigService) private readonly config: ConfigService,
+    private readonly api: N8nApiClient,
+    private readonly audit: AuditService,
+  ) {}
+
+  /**
+   * Compile a published workflow_version, push it to n8n, cache the compiled
+   * artifact in workflow_adapter_artifacts. Idempotent: same canonical input
+   * + same cached hash → no remote write. Different hash → PUT. Cached
+   * n8nWorkflowId returns 404 from n8n → POST + cache update (covers the
+   * "delete + republish reproduces it" AC).
+   */
+  async syncPublishedVersion(
+    workflowVersionId: string,
+    tenantId: string,
+    actorId: string | undefined,
+  ): Promise<SyncResult> {
+    const started = Date.now();
+
+    const versionRow = await this.loadVersion(workflowVersionId, tenantId);
+    if (!versionRow) {
+      throw new Error(`workflow_version ${workflowVersionId} not found for tenant ${tenantId}`);
+    }
+
+    const canonical = compile(versionRow.spec);
+    if (!canonical.ok) {
+      throw new Error(
+        `canonical compile failed: ${canonical.errors.map((e) => e.code).join(', ')}`,
+      );
+    }
+
+    const artifact = compileToN8n(canonical.compiled, {
+      workflowName: `wf-${workflowVersionId}`,
+      webhookBaseUrl: this.requiredEnv('N8N_WEBHOOK_BASE_URL'),
+      webhookSecret: this.requiredEnv('N8N_WEBHOOK_SECRET'),
+      workflowVersionId,
+      tenantId,
+      errorWorkflowName: `wf-${workflowVersionId}__error`,
+    });
+
+    const cached = await this.loadCachedArtifact(workflowVersionId);
+    let action: SyncResult['action'];
+    let n8nWorkflowId: string;
+    let n8nErrorWorkflowId: string;
+
+    if (cached && cached.canonicalHash === artifact.canonicalHash && cached.n8nWorkflowId) {
+      const remoteExists = await this.api.getWorkflow(cached.n8nWorkflowId);
+      if (remoteExists) {
+        action = 'skipped';
+        n8nWorkflowId = cached.n8nWorkflowId;
+        n8nErrorWorkflowId = cached.n8nErrorWorkflowId ?? '';
+      } else {
+        ({ n8nWorkflowId, n8nErrorWorkflowId } = await this.pushFresh(artifact));
+        action = 'recreated';
+      }
+    } else if (cached && cached.n8nWorkflowId) {
+      try {
+        const updated = await this.api.updateWorkflow(cached.n8nWorkflowId, artifact.workflow);
+        await this.api.activateWorkflow(updated.id);
+        n8nWorkflowId = updated.id;
+        n8nErrorWorkflowId =
+          (await this.upsertErrorWorkflow(artifact, cached.n8nErrorWorkflowId)) ?? '';
+        action = 'updated';
+      } catch (err) {
+        if (err instanceof N8nApiError && err.status === 404) {
+          ({ n8nWorkflowId, n8nErrorWorkflowId } = await this.pushFresh(artifact));
+          action = 'recreated';
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      ({ n8nWorkflowId, n8nErrorWorkflowId } = await this.pushFresh(artifact));
+      action = 'created';
+    }
+
+    await this.saveArtifact(workflowVersionId, {
+      ...artifact,
+      n8nWorkflowId,
+      n8nErrorWorkflowId,
+      compiledAt: new Date().toISOString(),
+    });
+
+    await this.audit.log({
+      tenantId,
+      actorId,
+      actorType: actorId ? 'service_account' : 'system',
+      action: 'workflow.synced',
+      resourceType: 'workflow_version',
+      resourceId: workflowVersionId,
+      metadata: {
+        n8nWorkflowId,
+        n8nErrorWorkflowId,
+        canonicalHash: artifact.canonicalHash,
+        action,
+        durationMs: Date.now() - started,
+      },
+    });
+
+    return {
+      workflowVersionId,
+      n8nWorkflowId,
+      n8nErrorWorkflowId,
+      canonicalHash: artifact.canonicalHash,
+      action,
+    };
+  }
+
+  private async pushFresh(
+    artifact: N8nCompiledArtifact,
+  ): Promise<{ n8nWorkflowId: string; n8nErrorWorkflowId: string }> {
+    const errorWf = await this.api.createWorkflow(artifact.errorWorkflow);
+    const mainWf = await this.api.createWorkflow({
+      ...artifact.workflow,
+      settings: { ...artifact.workflow.settings, errorWorkflow: errorWf.id },
+    });
+    await this.api.activateWorkflow(mainWf.id);
+    return { n8nWorkflowId: mainWf.id, n8nErrorWorkflowId: errorWf.id };
+  }
+
+  private async upsertErrorWorkflow(
+    artifact: N8nCompiledArtifact,
+    existingId: string | undefined,
+  ): Promise<string | undefined> {
+    if (!existingId) {
+      const created = await this.api.createWorkflow(artifact.errorWorkflow);
+      return created.id;
+    }
+    try {
+      const updated = await this.api.updateWorkflow(existingId, artifact.errorWorkflow);
+      return updated.id;
+    } catch (err) {
+      if (err instanceof N8nApiError && err.status === 404) {
+        const created = await this.api.createWorkflow(artifact.errorWorkflow);
+        return created.id;
+      }
+      throw err;
+    }
+  }
+
+  private async loadVersion(
+    workflowVersionId: string,
+    tenantId: string,
+  ): Promise<{ spec: unknown } | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SET LOCAL app.tenant_id = $1", [tenantId]);
+      const res = await client.query(
+        'SELECT spec FROM workflow_versions WHERE id = $1 LIMIT 1',
+        [workflowVersionId],
+      );
+      await client.query('COMMIT');
+      if (res.rows.length === 0) return null;
+      return { spec: res.rows[0].spec };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async loadCachedArtifact(
+    workflowVersionId: string,
+  ): Promise<N8nCompiledArtifact | null> {
+    const res = await this.pool.query(
+      `SELECT artifact FROM workflow_adapter_artifacts
+       WHERE workflow_version_id = $1 AND adapter_type = 'n8n' LIMIT 1`,
+      [workflowVersionId],
+    );
+    if (res.rows.length === 0) return null;
+    return res.rows[0].artifact as N8nCompiledArtifact;
+  }
+
+  private async saveArtifact(
+    workflowVersionId: string,
+    artifact: N8nCompiledArtifact,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO workflow_adapter_artifacts (workflow_version_id, adapter_type, artifact, compiled_at)
+       VALUES ($1, 'n8n', $2, now())
+       ON CONFLICT (workflow_version_id, adapter_type)
+       DO UPDATE SET artifact = EXCLUDED.artifact, compiled_at = now()`,
+      [workflowVersionId, artifact],
+    );
+  }
+
+  private requiredEnv(name: string): string {
+    const v = this.config.get<string>(name);
+    if (!v) throw new Error(`Missing required env var: ${name}`);
+    return v;
+  }
+}

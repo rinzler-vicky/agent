@@ -7,7 +7,11 @@ import { AuthModule } from './auth/auth.module';
 import { TenantsModule } from './tenants/tenants.module';
 import { AuditModule } from './audit/audit.module';
 import { StorageModule } from './storage/storage.module';
+import { WorkflowsModule } from './workflows/workflows.module';
 import { TenantMiddleware } from './auth/tenant.middleware';
+
+const workflowControlPlaneEnabled =
+  process.env.WORKFLOW_CONTROL_PLANE_ENABLED === 'true';
 
 @Module({
   imports: [
@@ -19,6 +23,7 @@ import { TenantMiddleware } from './auth/tenant.middleware';
     TenantsModule,
     AuditModule,
     StorageModule,
+    ...(workflowControlPlaneEnabled ? [WorkflowsModule] : []),
   ],
 })
 export class AppModule implements NestModule {
