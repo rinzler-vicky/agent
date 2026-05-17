@@ -68,8 +68,17 @@ export class N8nSyncService {
     let n8nErrorWorkflowId: string;
 
     if (cached && cached.canonicalHash === artifact.canonicalHash && cached.n8nWorkflowId) {
-      const remoteExists = await this.api.getWorkflow(cached.n8nWorkflowId);
-      if (remoteExists) {
+      // Verify BOTH the main workflow and the error workflow still exist.
+      // If only the main is checked, a deleted error workflow leaves
+      // settings.errorWorkflow pointing at a stale id and failure callbacks
+      // stop working — the pair must be in sync.
+      const [remoteMain, remoteError] = await Promise.all([
+        this.api.getWorkflow(cached.n8nWorkflowId),
+        cached.n8nErrorWorkflowId
+          ? this.api.getWorkflow(cached.n8nErrorWorkflowId)
+          : Promise.resolve(null),
+      ]);
+      if (remoteMain && remoteError) {
         action = 'skipped';
         n8nWorkflowId = cached.n8nWorkflowId;
         n8nErrorWorkflowId = cached.n8nErrorWorkflowId ?? '';
@@ -189,7 +198,9 @@ export class N8nSyncService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SET LOCAL app.tenant_id = $1", [tenantId]);
+      // set_config with is_local=true is equivalent to SET LOCAL but accepts a
+      // bind parameter, which SET LOCAL does not support.
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
       const res = await client.query(
         `SELECT v.spec
            FROM workflow_versions v

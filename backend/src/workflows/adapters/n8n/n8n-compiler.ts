@@ -383,9 +383,11 @@ function pingNode(
     bodyObj.runId = `={{ $('${TRIGGER_NAME}').item.json.runId }}`;
     bodyObj.tenantId = `={{ $('${TRIGGER_NAME}').item.json.tenantId }}`;
   } else {
-    // Error Trigger only exposes execution metadata. runId/tenantId aren't
-    // available; the webhook handler resolves them by looking up the
-    // original run via n8nExecutionId (see receive() in the controller).
+    // Error Trigger only exposes execution metadata; runId/tenantId are not
+    // available. The webhook controller routes these events to an audit-only
+    // path (no workflow_runs / run_events writes) until Phase 2.4 adds the
+    // n8n_execution_id column on workflow_runs so the originating run can be
+    // resolved. See N8nWebhookController.receive() for the actual routing.
     bodyObj.errorDetails = '={{ $json.execution.error || null }}';
     bodyObj.lastNodeExecuted = '={{ $json.execution.lastNodeExecuted || null }}';
     bodyObj.failedWorkflowId = '={{ $json.workflow.id }}';

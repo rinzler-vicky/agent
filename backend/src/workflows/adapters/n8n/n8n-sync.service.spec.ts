@@ -146,6 +146,27 @@ describe('N8nSyncService.syncPublishedVersion', () => {
     expect(apiCalls.filter((c) => c[0] === 'createWorkflow' || c[0] === 'updateWorkflow')).toHaveLength(0);
   });
 
+  it('recreates when cached error workflow no longer exists on n8n side', async () => {
+    const first = makeService();
+    await first.svc.syncPublishedVersion(WV_ID, TENANT, 'a');
+    const cached = first.getCached();
+
+    // Main workflow exists but error workflow was deleted — recreate both.
+    const { svc, apiCalls } = makeService({
+      cached,
+      apiOverrides: {
+        getWorkflow: async (id: string) => {
+          // Return null only for the error workflow id
+          if (id === cached.n8nErrorWorkflowId) return null;
+          return { id, name: 'x', active: true, versionId: 'v1', nodes: [], connections: {}, settings: {} };
+        },
+      },
+    });
+    const r = await svc.syncPublishedVersion(WV_ID, TENANT, 'a');
+    expect(r.action).toBe('recreated');
+    expect(apiCalls.filter((c) => c[0] === 'createWorkflow')).toHaveLength(2);
+  });
+
   it('recreates when cached n8nWorkflowId no longer exists on n8n side', async () => {
     const first = makeService();
     await first.svc.syncPublishedVersion(WV_ID, TENANT, 'a');
@@ -235,7 +256,7 @@ describe('N8nSyncService.syncPublishedVersion', () => {
 
     await svc.syncPublishedVersion(WV_ID, TENANT, 'a');
 
-    const setLocal = queries.find((q) => q.sql.includes('SET LOCAL app.tenant_id'));
+    const setLocal = queries.find((q) => q.sql.includes('set_config') && q.sql.includes('app.tenant_id'));
     expect(setLocal?.params[0]).toBe(TENANT);
     const selectVersion = queries.find(
       (q) => q.sql.includes('workflow_versions') && q.sql.includes('workflow_defs'),

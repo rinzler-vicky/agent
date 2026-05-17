@@ -30,6 +30,17 @@ import { N8nWebhookEventDto, N8nWebhookResponseDto } from './n8n-webhook.dto';
 
 const DEDUPE_NAMESPACE = '7a7c4f1e-3b9e-4f5a-9e3d-c1b2a3d4e5f6';
 
+// Exhaustive allow-list mirrors N8nWebhookEventType in types.ts.
+// Validate at the boundary so an unrecognised event value is rejected with 401
+// rather than silently appended to run_events with no status branch applied.
+const ALLOWED_EVENTS = new Set<string>([
+  'workflow.started',
+  'workflow.completed',
+  'workflow.failed',
+  'step.started',
+  'step.completed',
+]);
+
 @ApiTags('n8n-webhooks')
 @ApiExtraModels(N8nWebhookEventDto, N8nWebhookResponseDto)
 @Controller({ path: 'n8n/webhooks', version: '1' })
@@ -78,6 +89,9 @@ export class N8nWebhookController {
     if (!body || typeof body !== 'object' || !body.event) {
       throw new UnauthorizedException('Malformed payload');
     }
+    if (!ALLOWED_EVENTS.has(body.event)) {
+      throw new UnauthorizedException('Unsupported event type');
+    }
     if (!isFresh(body.timestamp, this.clockSkewSeconds)) {
       throw new UnauthorizedException('Stale timestamp');
     }
@@ -109,6 +123,12 @@ export class N8nWebhookController {
     if (!uuidValidate(body.tenantId) || !uuidValidate(body.runId)) {
       throw new UnauthorizedException('Invalid runId or tenantId');
     }
+    // step.started/step.completed write to step_runs.step_key (NOT NULL).
+    // Validate here so a malformed ping is rejected with 401 rather than
+    // reaching the DB and returning a 500 that triggers n8n retries.
+    if ((body.event === 'step.started' || body.event === 'step.completed') && !body.stepKey) {
+      throw new UnauthorizedException('stepKey is required for step events');
+    }
 
     const eventId = uuidv5(
       `${body.runId}|${body.stepKey ?? ''}|${body.event}|${body.timestamp}`,
@@ -118,7 +138,9 @@ export class N8nWebhookController {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SET LOCAL app.tenant_id = $1", [body.tenantId]);
+      // set_config with is_local=true is equivalent to SET LOCAL but accepts a
+      // bind parameter, which SET LOCAL does not support.
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [body.tenantId]);
 
       // Serialize concurrent deliveries with the same event_id so the
       // SELECT-then-INSERT below is effectively atomic without needing a
@@ -238,7 +260,7 @@ export class N8nWebhookController {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("SET LOCAL app.tenant_id = $1", [body.tenantId]);
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [body.tenantId]);
       await client.query(
         `UPDATE workflow_runs
          SET output = COALESCE(output, $2),

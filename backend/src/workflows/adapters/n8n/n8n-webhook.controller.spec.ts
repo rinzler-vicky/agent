@@ -70,6 +70,29 @@ describe('N8nWebhookController.receive', () => {
     await expect(controller.receive('wrong-secret', event())).rejects.toThrow(UnauthorizedException);
   });
 
+  it('rejects unknown event types', async () => {
+    const { controller } = makeController();
+    await expect(
+      controller.receive(SECRET, event({ event: 'step.bogus' as any })),
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('rejects step events without stepKey', async () => {
+    const { controller } = makeController();
+    await expect(
+      controller.receive(SECRET, event({ event: 'step.started', stepKey: undefined })),
+    ).rejects.toThrow(UnauthorizedException);
+    await expect(
+      controller.receive(SECRET, event({ event: 'step.completed', stepKey: undefined })),
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('accepts step events with stepKey present', async () => {
+    const { controller } = makeController();
+    const r = await controller.receive(SECRET, event({ event: 'step.started', stepKey: 'b_http' }));
+    expect(r.ok).toBe(true);
+  });
+
   it('rejects malformed payloads', async () => {
     const { controller } = makeController();
     await expect(controller.receive(SECRET, {} as any)).rejects.toThrow(UnauthorizedException);
@@ -117,7 +140,7 @@ describe('N8nWebhookController.receive', () => {
     const { controller, queries } = makeController();
     await controller.receive(SECRET, event({ event: 'workflow.started' }));
     const setTenant = queries.find(
-      (q) => q.sql.includes('SET LOCAL app.tenant_id') && q.params[0] === TENANT,
+      (q) => q.sql.includes('set_config') && q.sql.includes('app.tenant_id') && q.params[0] === TENANT,
     );
     expect(setTenant).toBeDefined();
   });
