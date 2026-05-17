@@ -9,6 +9,16 @@ import {
   Inject,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiHeader,
+  ApiBody,
+  ApiOkResponse,
+  ApiUnauthorizedResponse,
+  ApiExtraModels,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { Pool, PoolClient } from 'pg';
 import { v5 as uuidv5, validate as uuidValidate } from 'uuid';
 import { DATABASE_POOL } from '@/database/database.module';
@@ -16,9 +26,12 @@ import { AuditService } from '@/audit/audit.service';
 import { verifyStaticSecret, isFresh, SECRET_HEADER } from './hmac';
 import { N8nApiClient } from './n8n-api.client';
 import type { N8nWebhookEvent } from './types';
+import { N8nWebhookEventDto, N8nWebhookResponseDto } from './n8n-webhook.dto';
 
 const DEDUPE_NAMESPACE = '7a7c4f1e-3b9e-4f5a-9e3d-c1b2a3d4e5f6';
 
+@ApiTags('n8n-webhooks')
+@ApiExtraModels(N8nWebhookEventDto, N8nWebhookResponseDto)
 @Controller('v1/n8n/webhooks')
 export class N8nWebhookController {
   private readonly logger = new Logger(N8nWebhookController.name);
@@ -37,6 +50,24 @@ export class N8nWebhookController {
 
   @Post('execution')
   @HttpCode(200)
+  @ApiOperation({
+    summary: 'Receive an execution event from n8n',
+    description:
+      'Inbound endpoint that n8n calls from injected `__pre_*`, `__post_*`, `__start_ping`, and `__end_ping` HTTP Request nodes (and from the shared error-trigger workflow). Verifies a static shared secret, checks timestamp freshness, deduplicates via a uuidv5 key, sets the tenant RLS context from the signed payload, then upserts `step_runs` and appends to `run_events`. Idempotent on repeated deliveries. Always returns 200 on accepted (n8n retries on non-2xx).',
+  })
+  @ApiHeader({
+    name: SECRET_HEADER,
+    description: 'Shared secret (matches `N8N_WEBHOOK_SECRET`). Verified with constant-time comparison.',
+    required: true,
+  })
+  @ApiBody({ type: N8nWebhookEventDto })
+  @ApiOkResponse({
+    description: 'Event accepted (or deduplicated).',
+    schema: { $ref: getSchemaPath(N8nWebhookResponseDto) },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Missing/invalid secret, malformed payload, non-UUID identifiers, or timestamp outside the freshness window.',
+  })
   async receive(
     @Headers(SECRET_HEADER) secretHeader: string | undefined,
     @Body() body: N8nWebhookEvent,
