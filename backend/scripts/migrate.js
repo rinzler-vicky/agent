@@ -45,8 +45,17 @@ async function run() {
       }
     } else if (direction === 'down') {
       console.log('  ▼  Running down migration...');
-      const sql = fs.readFileSync(path.join(migrationsDir, '006_rollback_down.sql'), 'utf8');
-      await client.query(sql);
+      // Run rollback migrations in reverse order
+      const rollbackFiles = ['012_rollback_phase_2_1_down.sql', '006_rollback_down.sql'];
+      for (const file of rollbackFiles) {
+        const filePath = path.join(migrationsDir, file);
+        if (fs.existsSync(filePath)) {
+          console.log(`  ▶  Running ${file}...`);
+          const sql = fs.readFileSync(filePath, 'utf8');
+          await client.query(sql);
+          console.log(`  ✓  Completed ${file}`);
+        }
+      }
       await client.query('DELETE FROM schema_migrations');
       console.log('  ✓  Down migration complete');
     } else {
