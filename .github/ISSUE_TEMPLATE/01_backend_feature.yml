@@ -52,7 +52,7 @@ body:
     id: reuse_pointers
     attributes:
       label: Reuse pointers
-      description: File paths of existing utilities, services, schema patterns, or modules that this work must reuse rather than reimplement. Pulled from current repo observations during planning.
+      description: File paths of existing utilities, services, schema patterns, or modules that this work must reuse rather than reimplement. Identify these from current repo observations during planning.
       placeholder: "- `backend/src/database/...` — shared pg pool\n- `backend/src/...` — describe reuse"
     validations:
       required: true
@@ -61,7 +61,7 @@ body:
     attributes:
       label: Rollback plan
       description: How is this phase rolled back if it must be reverted? Feature flag, paired migration-down per PR, PITR window, etc.
-      placeholder: "- Feature flag: describe flag name and removal plan\n- Migrations: each PR ships its own down step\n- DB recovery window: describe PITR or snapshot strategy"
+      placeholder: "- Feature flag: describe flag name and removal plan\n- Migrations: each PR ships its own down step\n- PITR window: describe recovery window or snapshot strategy"
     validations:
       required: true
   - type: textarea
