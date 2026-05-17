@@ -42,7 +42,7 @@ services:
     plan: starter
     region: oregon
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @agent/backend build
+    buildCommand: corepack pnpm install --frozen-lockfile && corepack pnpm --filter @agent/backend build
     startCommand: pnpm --filter @agent/backend start
     healthCheckPath: /v1/health
     autoDeploy: true
