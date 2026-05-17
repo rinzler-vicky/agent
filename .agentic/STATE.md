@@ -68,10 +68,15 @@ PR Preview Automation — implementing ephemeral environments for pull requests 
 * Set app.tenant_id session variable per database client in DatabaseModule.
 * Add integration/E2E tests (Supertest against live NestJS app).
 * Review ADR-0001 with stakeholders and get formal sign-off.
-* Begin Phase 2: Workflow Control Plane.
 
 ## Pending Tasks (PR Preview Automation - Issue #35, post ADR-0002)
 * Apply Neon migrations 001..005 to the Neon `main` branch (one-time prerequisite — every preview is a copy-on-write clone of `main`).
 * Connect Render Blueprint: Render Dashboard → New → Blueprint → select repo → provide the four `sync: false` values (DATABASE_URL pointing at Neon main, AWS_*, S3_BUCKET, CORS_ORIGINS).
 * End-to-end verification on a throwaway PR (see ADR-0002 §Test strategy): confirm preview JWT_SECRET differs from base JWT_SECRET (validates `generateValue` per-preview behavior).
 * Get formal sign-off on ADR-0002 (currently Proposed).
+
+## Phase 2 readiness gates (block implementation start)
+* [ ] Phase 1b closed (all bullets above checked off).
+* [ ] Self-evolution #39 merged — `01_backend_feature.yml` strengthened so future phase issues are born meeting Definition of Ready.
+* [ ] ADR-0002 (Workflow Control Plane) drafted with all 11 open questions resolved in the options table, `Status: Accepted` recorded by `rinzler-vicky`. Tracked by the ADR-0002 child issue under #25.
+* [ ] Then: begin Phase 2 implementation per the child issues linked from #25 (execution order: 2.1 schema → 2.2 compiler / 2.3 n8n adapter (parallel) → 2.4 lifecycle+proposal API → 2.5 execution+streaming+previews+failure-hook).
