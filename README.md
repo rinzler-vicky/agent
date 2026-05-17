@@ -2,6 +2,8 @@
 
 This project is built and maintained **entirely by AI agents**. There is no manual coding. The only human action required is opening a GitHub Issue describing the module or feature to be built.
 
+> **Full documentation is on the [GitHub Wiki](https://github.com/rinzler-vicky/agent/wiki).** The wiki covers installation, usage, architecture, PR preview environments, troubleshooting, and ADRs in detail. Wiki source files live in [`docs/wiki/`](docs/wiki/) and are synced automatically on every merge to `main`.
+
 ---
 
 ## Table of Contents

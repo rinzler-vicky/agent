@@ -23,6 +23,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const HTTP_VERB_DECORATORS = new Set([
   '@Get',
@@ -51,42 +52,80 @@ function findControllers(root) {
   return out;
 }
 
-function checkFile(file) {
-  const text = fs.readFileSync(file, 'utf8');
+/**
+ * Scan backward from line `origin` (0-based) looking for `pattern`.
+ * Correctly handles multi-line decorator arguments by tracking paren depth:
+ *   - scanning backward: ')' enters a deeper level (depth++), '(' exits (depth--)
+ *   - while depth > 0 we are inside a decorator's argument list → keep scanning
+ *   - once depth returns to 0 a non-decorator line terminates the block
+ */
+function scanBackward(lines, origin, pattern) {
+  let depth = 0;
+  for (let j = origin - 1; j >= 0; j--) {
+    const prev = lines[j].trim();
+    if (pattern.test(prev)) return true;
+    for (const ch of prev) {
+      if (ch === ')') depth++;
+      else if (ch === '(') depth--;
+    }
+    if (depth < 0) break;
+    if (depth === 0 && prev === '') break;
+    if (depth === 0 && !prev.startsWith('@')) break;
+  }
+  return false;
+}
+
+/**
+ * Scan forward from line `origin` (0-based) looking for `pattern`.
+ * Tracks paren depth to traverse multi-line decorator arguments:
+ *   - scanning forward: '(' increases depth, ')' decreases
+ *   - prevDepth tracks the depth BEFORE the current line's parens are counted
+ *     so that a standalone ')' closing a multi-line decorator (prevDepth > 0,
+ *     newDepth = 0) does not trigger the "non-decorator" break.
+ */
+function scanForward(lines, origin, pattern) {
+  let depth = 0;
+  for (let j = origin + 1; j < lines.length; j++) {
+    const next = lines[j].trim();
+    if (next === '' && depth === 0) break;
+    if (pattern.test(next)) return true;
+    const prevDepth = depth;
+    for (const ch of next) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+    }
+    if (depth < 0) break;
+    // Only break on non-decorator lines that were themselves at depth 0 (i.e. not
+    // closing-paren lines that brought us from depth>0 back to 0).
+    if (depth === 0 && prevDepth === 0 && !next.startsWith('@') && next !== '') break;
+  }
+  return false;
+}
+
+function checkFile(file, readContent) {
+  const text = readContent(file);
   const lines = text.split(/\r?\n/);
   const violations = [];
-
   let hasController = false;
-  let hasApiTags = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (/@Controller\s*\(/.test(line)) hasController = true;
-    if (/@ApiTags\s*\(/.test(line)) hasApiTags = true;
 
-    // Find HTTP verb decorators and look back for @ApiOperation in the same
-    // decorator block (a contiguous run of lines starting with @).
+    // Per-class @ApiTags check: every @Controller class must carry @ApiTags in
+    // its own decorator block.  A file-level flag would miss the second class in
+    // a file that has two controllers where only one is annotated.
+    if (/@Controller\s*\(/.test(line)) {
+      hasController = true;
+      if (!scanBackward(lines, i, /@ApiTags\s*\(/)) {
+        violations.push({ line: i + 1, message: '@Controller class is missing @ApiTags' });
+      }
+    }
+
+    // Per-route @ApiOperation check
     const verbMatch = line.match(/^\s*(@[A-Z][a-zA-Z]+)\s*\(/);
     if (verbMatch && HTTP_VERB_DECORATORS.has(verbMatch[1])) {
-      let foundOp = false;
-      // Look at decorators above AND below this verb decorator. NestJS
-      // tolerates either order; what matters is that the same method has
-      // a matching @ApiOperation in its decorator stack.
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = lines[j].trim();
-        if (prev === '') break;
-        if (/@ApiOperation\s*\(/.test(prev)) { foundOp = true; break; }
-        if (!prev.startsWith('@') && !prev.startsWith(')')) break;
-      }
-      if (!foundOp) {
-        for (let j = i + 1; j < lines.length; j++) {
-          const next = lines[j].trim();
-          if (next === '') break;
-          if (/@ApiOperation\s*\(/.test(next)) { foundOp = true; break; }
-          if (!next.startsWith('@') && !next.startsWith(')')) break;
-        }
-      }
-      if (!foundOp) {
+      const op = /@ApiOperation\s*\(/;
+      if (!scanBackward(lines, i, op) && !scanForward(lines, i, op)) {
         violations.push({
           line: i + 1,
           message: `${verbMatch[1]} method is missing @ApiOperation`,
@@ -95,26 +134,42 @@ function checkFile(file) {
     }
   }
 
-  if (hasController && !hasApiTags) {
-    violations.push({ line: 1, message: '@Controller class is missing @ApiTags' });
-  }
-
   return { hasController, violations };
 }
 
 function main() {
   const argv = process.argv.slice(2);
+  const useStaged = argv.includes('--staged');
   const explicitFiles = argv.filter((a) => !a.startsWith('-'));
   const targets =
     explicitFiles.length > 0
       ? explicitFiles.filter((f) => /\.controller\.ts$/.test(f) && fs.existsSync(f))
       : findControllers(path.resolve(__dirname, '..', 'src'));
 
+  /**
+   * Read file content: when --staged is passed, read the indexed (staged) copy
+   * from the git object store so that the pre-commit hook validates what will
+   * actually be committed, not the potentially-modified working-tree version.
+   */
+  function readContent(file) {
+    if (useStaged) {
+      const rel = path.relative(process.cwd(), file).replace(/\\/g, '/');
+      try {
+        // execFileSync avoids shell interpretation of rel; the only expected
+        // failure is "path not in index" (new file) → fall through to readFileSync.
+        return execFileSync('git', ['show', `:${rel}`], { encoding: 'utf8' });
+      } catch {
+        // New file not yet tracked in the index — fall back to working tree.
+      }
+    }
+    return fs.readFileSync(file, 'utf8');
+  }
+
   let totalViolations = 0;
   const report = [];
 
   for (const file of targets) {
-    const { hasController, violations } = checkFile(file);
+    const { hasController, violations } = checkFile(file, readContent);
     if (!hasController) continue;
     if (violations.length === 0) continue;
     totalViolations += violations.length;

@@ -42,6 +42,8 @@ Every meaningful change must pass through these gates:
 
 7. Documentation
    - Update README, docs, ADRs, examples, env docs, API docs, schema docs, and prompt/workflow docs when behavior changes.
+   - **Update `docs/wiki/**` pages when implementation changes user-facing behavior, API surfaces, configuration, architecture, troubleshooting patterns, workflows, or contribution guidelines.** The wiki is the primary source of truth for user and contributor documentation.
+   - **OpenAPI annotations (NestJS controllers):** For any new or modified `*.controller.ts`, use the project's OpenAPI annotation library (currently `@nestjs/swagger`): add `@ApiTags(...)` on the controller class and `@ApiOperation(...)` on every HTTP-verb route. Run `pnpm --filter @agent/backend check:swagger` before opening a PR.
    - Add a brief "Learnings / Trial and Error" note to the issue or PR for agent continuity.
    - Update `.agentic/STATE.md` with current phase, active domain, decisions made, and pending tasks before opening a PR.
 
@@ -80,6 +82,7 @@ A task is done only when:
 - Acceptance criteria are met
 - Tests/checks listed in the issue were run and documented
 - New behavior is documented
+- **Wiki pages in `docs/wiki/` are updated** if the change affects: installation, usage, architecture, troubleshooting, workflows, PR previews, ADR index, or contributing guidelines
 - Migration/rollback notes are included if applicable
 - Learnings, trial/errors, and outcomes are recorded
 - Follow-up issues are created for anything intentionally deferred
