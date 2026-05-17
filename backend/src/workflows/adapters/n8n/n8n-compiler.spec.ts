@@ -97,6 +97,63 @@ describe('compileToN8n', () => {
     expect(names).toContain('__post_e_false');
   });
 
+  it('routes branch true/false to distinct n8n output indices (fix for Copilot review #128)', () => {
+    const artifact = compileToN8n(compileOk(branch), OPTS);
+    const branchConn = artifact.workflow.connections.c_branch;
+    expect(branchConn).toBeDefined();
+    expect(branchConn.main.length).toBeGreaterThanOrEqual(2);
+    // Output index 0 = true → __pre_d_true; index 1 = false → __pre_e_false
+    expect(branchConn.main[0].some((t) => t.node === '__pre_d_true')).toBe(true);
+    expect(branchConn.main[1].some((t) => t.node === '__pre_e_false')).toBe(true);
+  });
+
+  it('omits post-ping for multi-output canonical nodes', () => {
+    const artifact = compileToN8n(compileOk(branch), OPTS);
+    const names = artifact.workflow.nodes.map((n) => n.name);
+    expect(names).not.toContain('__post_c_branch');
+    // Single-output transforms still have post-pings
+    expect(names).toContain('__post_d_true');
+    expect(names).toContain('__post_e_false');
+  });
+
+  it('emits runId/tenantId as trigger expressions, not static values (fix for Copilot review #92)', () => {
+    const artifact = compileToN8n(compileOk(linear), OPTS);
+    const ping = artifact.workflow.nodes.find((n) => n.name === '__start_ping')!;
+    const jsonBody = (ping.parameters as any).jsonBody as string;
+    expect(jsonBody).toContain("$('__trigger').item.json.runId");
+    expect(jsonBody).toContain("$('__trigger').item.json.tenantId");
+    expect(jsonBody).not.toContain(OPTS.workflowVersionId);
+    expect(jsonBody).not.toContain(OPTS.tenantId);
+  });
+
+  it('llm.call / tool.call: baked URL, agent secret header, no spread (fix for Gemini #189/#203)', () => {
+    const wf = {
+      schemaVersion: '1',
+      id: 'wf_llm',
+      name: 'LLM',
+      nodes: [
+        { id: 'a_start', type: 'start' },
+        { id: 'b_load', type: 'http.request', config: { url: 'https://x', method: 'GET' } },
+        { id: 'c_llm', type: 'llm.call', config: { url: 'EVIL-OVERRIDE', method: 'EVIL', prompt: 'hi' } },
+        { id: 'd_end', type: 'end' },
+      ],
+      edges: [
+        { id: 'e1', from: { nodeId: 'a_start', port: 'out' }, to: { nodeId: 'b_load', port: 'in' } },
+        { id: 'e2', from: { nodeId: 'b_load', port: 'out' }, to: { nodeId: 'c_llm', port: 'in' } },
+        { id: 'e3', from: { nodeId: 'c_llm', port: 'out' }, to: { nodeId: 'd_end', port: 'in' } },
+      ],
+    };
+    const artifact = compileToN8n(compileOk(wf), OPTS);
+    const llm = artifact.workflow.nodes.find((n) => n.name === 'c_llm')!;
+    const p = llm.parameters as any;
+    expect(p.url).toBe(`${OPTS.webhookBaseUrl}/v1/agent/llm-call`);
+    expect(p.method).toBe('POST');
+    const headers = p.headerParameters.parameters as any[];
+    expect(headers.find((h) => h.name === 'x-agent-webhook-secret').value).toBe(OPTS.webhookSecret);
+    // canonical config goes into jsonBody, not into structural parameters
+    expect(p.jsonBody).toContain('"prompt":"hi"');
+  });
+
   it('fails loudly on unsupported parallel node type', () => {
     const wf = {
       schemaVersion: '1',

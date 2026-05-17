@@ -149,4 +149,15 @@ describe('N8nWebhookController.receive', () => {
     );
     expect(fail).toBeDefined();
   });
+
+  it('takes a pg_advisory_xact_lock before the dedupe check (fix for Copilot review #76)', async () => {
+    const { controller, queries } = makeController();
+    await controller.receive(SECRET, event({ event: 'step.started', stepKey: 's1' }));
+    const lockIdx = queries.findIndex((q) => q.sql.includes('pg_advisory_xact_lock'));
+    const dedupeIdx = queries.findIndex((q) =>
+      q.sql.includes("event_data->>'event_id'"),
+    );
+    expect(lockIdx).toBeGreaterThanOrEqual(0);
+    expect(dedupeIdx).toBeGreaterThan(lockIdx);
+  });
 });

@@ -41,7 +41,11 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:-agent_dev_password}
       PGDATABASE: postgres
     volumes:
-      - ./n8n/init-n8n-db.sql:/init-n8n-db.sql:ro
+      # Compose v2 resolves relative paths from the first `-f` file's
+      # project directory (the repo root when running the documented
+      # command). Use the repo-root-relative path so the bind mount finds
+      # the SQL file regardless of which compose-file order is used.
+      - ./infra/n8n/init-n8n-db.sql:/init-n8n-db.sql:ro
     entrypoint: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/init-n8n-db.sql"]
     restart: "no"
     networks:

@@ -64,6 +64,12 @@ export class N8nWebhookController {
       await client.query('BEGIN');
       await client.query("SET LOCAL app.tenant_id = $1", [body.tenantId]);
 
+      // Serialize concurrent deliveries with the same event_id so the
+      // SELECT-then-INSERT below is effectively atomic without needing a
+      // new UNIQUE index (which would require a migration). The lock is
+      // held for the transaction's lifetime and released automatically.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [eventId]);
+
       const existing = await client.query(
         `SELECT 1 FROM run_events WHERE event_data->>'event_id' = $1 LIMIT 1`,
         [eventId],

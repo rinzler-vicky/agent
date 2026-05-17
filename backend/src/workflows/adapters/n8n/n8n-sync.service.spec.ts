@@ -76,7 +76,7 @@ function mockPool(opts: {
   const client = {
     query: async (sql: string, params: any[] = []) => {
       queries.push({ sql, params });
-      if (sql.includes('SELECT spec FROM workflow_versions')) {
+      if (sql.includes('workflow_versions') && sql.includes('SELECT')) {
         return { rows: versionRow ? [{ spec: versionRow.spec }] : [] };
       }
       return { rows: [] };
@@ -208,5 +208,61 @@ describe('N8nSyncService.syncPublishedVersion', () => {
     const { pool } = mockPool({ versionRow: null });
     const svc = new N8nSyncService(pool, mockConfig(), api, audit);
     await expect(svc.syncPublishedVersion(WV_ID, TENANT, 'a')).rejects.toThrow(/not found/);
+  });
+
+  it('passes tenantId as both the SET LOCAL var and the WHERE filter (fix for Copilot review #175)', async () => {
+    const queries: Array<{ sql: string; params: any[] }> = [];
+    const client = {
+      query: async (sql: string, params: any[] = []) => {
+        queries.push({ sql, params });
+        if (sql.includes('workflow_versions') && sql.includes('SELECT')) {
+          return { rows: [{ spec: canonicalSpec }] };
+        }
+        return { rows: [] };
+      },
+      release: () => {},
+    };
+    const pool = {
+      connect: async () => client,
+      query: async (sql: string, params: any[] = []) => {
+        queries.push({ sql, params });
+        return { rows: [] };
+      },
+    } as any;
+    const { api } = mockApi();
+    const { audit } = mockAudit();
+    const svc = new N8nSyncService(pool, mockConfig(), api, audit);
+
+    await svc.syncPublishedVersion(WV_ID, TENANT, 'a');
+
+    const setLocal = queries.find((q) => q.sql.includes('SET LOCAL app.tenant_id'));
+    expect(setLocal?.params[0]).toBe(TENANT);
+    const selectVersion = queries.find(
+      (q) => q.sql.includes('workflow_versions') && q.sql.includes('workflow_defs'),
+    );
+    expect(selectVersion).toBeDefined();
+    // Tenant id appears as both the RLS session var and the explicit join filter
+    expect(selectVersion!.params).toContain(TENANT);
+  });
+
+  it('on 404 update fallback, only creates the main workflow (not the error workflow twice)', async () => {
+    const first = makeService();
+    await first.svc.syncPublishedVersion(WV_ID, TENANT, 'a');
+    const cached = first.getCached();
+    cached.canonicalHash = 'different-hash';
+
+    const { svc, apiCalls } = makeService({
+      cached,
+      apiOverrides: {
+        updateWorkflow: async () => {
+          throw new N8nApiError(404, '', 'gone');
+        },
+      },
+    });
+    const r = await svc.syncPublishedVersion(WV_ID, TENANT, 'a');
+    expect(r.action).toBe('recreated');
+    // 1 create for the upserted error workflow + 1 create for the main = 2.
+    // The bug would emit 3 (error created twice via pushFresh re-entry).
+    expect(apiCalls.filter((c) => c[0] === 'createWorkflow')).toHaveLength(2);
   });
 });

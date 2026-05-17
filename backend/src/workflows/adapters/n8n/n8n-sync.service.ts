@@ -78,16 +78,31 @@ export class N8nSyncService {
         action = 'recreated';
       }
     } else if (cached && cached.n8nWorkflowId) {
+      // Upsert error workflow FIRST so the main update can reference its id;
+      // otherwise we'd PUT a payload whose settings.errorWorkflow is the
+      // workflow name and clobber the existing valid reference.
+      const errorWfId =
+        (await this.upsertErrorWorkflow(artifact, cached.n8nErrorWorkflowId)) ?? '';
       try {
-        const updated = await this.api.updateWorkflow(cached.n8nWorkflowId, artifact.workflow);
+        const updated = await this.api.updateWorkflow(cached.n8nWorkflowId, {
+          ...artifact.workflow,
+          settings: { ...artifact.workflow.settings, errorWorkflow: errorWfId },
+        });
         await this.api.activateWorkflow(updated.id);
         n8nWorkflowId = updated.id;
-        n8nErrorWorkflowId =
-          (await this.upsertErrorWorkflow(artifact, cached.n8nErrorWorkflowId)) ?? '';
+        n8nErrorWorkflowId = errorWfId;
         action = 'updated';
       } catch (err) {
         if (err instanceof N8nApiError && err.status === 404) {
-          ({ n8nWorkflowId, n8nErrorWorkflowId } = await this.pushFresh(artifact));
+          // Main workflow gone on the remote side. The error workflow was
+          // just upserted above; reuse its id and only create a new main.
+          const mainWf = await this.api.createWorkflow({
+            ...artifact.workflow,
+            settings: { ...artifact.workflow.settings, errorWorkflow: errorWfId },
+          });
+          await this.api.activateWorkflow(mainWf.id);
+          n8nWorkflowId = mainWf.id;
+          n8nErrorWorkflowId = errorWfId;
           action = 'recreated';
         } else {
           throw err;
@@ -166,13 +181,23 @@ export class N8nSyncService {
     workflowVersionId: string,
     tenantId: string,
   ): Promise<{ spec: unknown } | null> {
+    // RLS hardening: workflow_versions itself has no RLS (only workflow_defs
+    // does, per migration 004:101-113). Join through workflow_defs and
+    // require an explicit tenant_id match so a caller with a leaked version
+    // UUID from another tenant cannot read it. SET LOCAL keeps the defense
+    // in depth via RLS on workflow_defs.
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await client.query("SET LOCAL app.tenant_id = $1", [tenantId]);
       const res = await client.query(
-        'SELECT spec FROM workflow_versions WHERE id = $1 LIMIT 1',
-        [workflowVersionId],
+        `SELECT v.spec
+           FROM workflow_versions v
+           JOIN workflow_defs d ON d.id = v.workflow_def_id
+          WHERE v.id = $1
+            AND d.tenant_id = $2
+          LIMIT 1`,
+        [workflowVersionId, tenantId],
       );
       await client.query('COMMIT');
       if (res.rows.length === 0) return null;

@@ -1,4 +1,8 @@
-import type { CompiledWorkflow, CanonicalNode } from '@/workflows/canonical/types';
+import type {
+  CompiledWorkflow,
+  CanonicalNode,
+  CanonicalEdge,
+} from '@/workflows/canonical/types';
 import type {
   N8nNode,
   N8nWorkflow,
@@ -46,14 +50,39 @@ const X_OFFSET = 240;
 const PRE_DX = -80;
 const POST_DX = 80;
 
+const TRIGGER_NAME = '__trigger';
+const START_PING = '__start_ping';
+const END_PING = '__end_ping';
+
+/**
+ * Canonical output port → n8n output index for multi-output node types.
+ * n8n IF node: 0 = true, 1 = false. n8n splitInBatches: 0 = body, 1 = done.
+ */
+const PORT_INDEX: Record<string, Record<string, number>> = {
+  branch: { true: 0, false: 1 },
+  loop: { body: 0, done: 1 },
+};
+
+const MULTI_OUTPUT_TYPES = new Set(Object.keys(PORT_INDEX));
+
 /**
  * Compile a CompiledWorkflow (Phase 2.2 output) to a pair of n8n workflows:
- * the main workflow with injected pre/post-step pings, and a shared
- * errorWorkflow that fires on any failure. Both objects are byte-stable
- * for identical inputs (keys inserted in sorted order; no Date.now() inside).
+ * the main workflow with injected pre-step pings and a trailing post-ping
+ * for single-output nodes; plus a shared errorWorkflow that fires on any
+ * failure. Both objects are byte-stable for identical inputs (keys inserted
+ * in sorted order; no Date.now() inside).
  *
  * Determinism is load-bearing for the workflow_adapter_artifacts cache and
  * the issue #43 AC "same canonical → same n8n JSON byte-for-byte".
+ *
+ * Connections are built from `compiled.edges` so multi-output canonical
+ * nodes (branch/loop) route to distinct n8n output indices instead of
+ * collapsing onto main[0].
+ *
+ * Runtime values that vary per execution (runId, tenantId, n8nExecutionId)
+ * are emitted as n8n expressions that resolve against the trigger node's
+ * input — Phase 2.4 will call `POST /workflows/{id}/run` with these in the
+ * trigger payload.
  */
 export function compileToN8n(
   compiled: CompiledWorkflow,
@@ -72,71 +101,74 @@ export function compileToN8n(
   const functionalIds = compiled.topoOrder.filter(
     (id) => !SYNTHETIC_TYPES.has(compiled.nodes[id].type),
   );
+  const positionByCanonicalId = new Map(
+    functionalIds.map((id, idx) => [id, idx]),
+  );
 
   const nodes: N8nNode[] = [];
   const connections: N8nConnections = {};
 
-  const triggerName = '__trigger';
   nodes.push({
-    name: triggerName,
+    name: TRIGGER_NAME,
     type: MANUAL_TRIGGER,
     typeVersion: MANUAL_TRIGGER_VERSION,
     position: [0, 0],
     parameters: {},
   });
 
-  const startPing = '__start_ping';
   nodes.push(
-    pingNode(startPing, 1, 0, opts, {
-      runIdParam: opts.workflowVersionId,
-      tenantIdParam: opts.tenantId,
+    pingNode(START_PING, X_OFFSET, 0, opts, {
       event: 'workflow.started',
     }),
   );
-  addConnection(connections, triggerName, startPing);
+  addConnection(connections, TRIGGER_NAME, START_PING);
 
-  let prevTail = startPing;
-  functionalIds.forEach((canonicalId, idx) => {
+  // Track which canonical nodes have a post-ping (only single-output types).
+  const hasPostPing = (canonicalType: string) =>
+    !MULTI_OUTPUT_TYPES.has(canonicalType) && !SYNTHETIC_TYPES.has(canonicalType);
+
+  for (const canonicalId of functionalIds) {
+    const idx = positionByCanonicalId.get(canonicalId) ?? 0;
     const baseX = (idx + 2) * X_OFFSET;
     const preName = `__pre_${canonicalId}`;
     const postName = `__post_${canonicalId}`;
+    const node = compiled.nodes[canonicalId];
 
     nodes.push(
       pingNode(preName, baseX + PRE_DX, 0, opts, {
-        runIdParam: opts.workflowVersionId,
-        tenantIdParam: opts.tenantId,
         event: 'step.started',
         stepKey: canonicalId,
       }),
     );
-
-    const mainNode = canonicalToN8nNode(compiled.nodes[canonicalId], baseX, 0);
-    nodes.push(mainNode);
-
-    nodes.push(
-      pingNode(postName, baseX + POST_DX, 0, opts, {
-        runIdParam: opts.workflowVersionId,
-        tenantIdParam: opts.tenantId,
-        event: 'step.completed',
-        stepKey: canonicalId,
-      }),
-    );
-
-    addConnection(connections, prevTail, preName);
+    nodes.push(canonicalToN8nNode(node, baseX, 0, opts));
     addConnection(connections, preName, canonicalId);
-    addConnection(connections, canonicalId, postName);
-    prevTail = postName;
-  });
 
-  const endPing = '__end_ping';
+    if (hasPostPing(node.type)) {
+      nodes.push(
+        pingNode(postName, baseX + POST_DX, 0, opts, {
+          event: 'step.completed',
+          stepKey: canonicalId,
+        }),
+      );
+      addConnection(connections, canonicalId, postName);
+    }
+  }
+
+  // Drive forward connections from canonical edges (port-aware).
+  for (const edge of compiled.edges) {
+    routeEdge(edge, compiled.nodes, connections, hasPostPing);
+  }
+
   nodes.push(
-    pingNode(endPing, (functionalIds.length + 2) * X_OFFSET, 0, opts, {
-      runIdParam: opts.workflowVersionId,
-      tenantIdParam: opts.tenantId,
+    pingNode(END_PING, (functionalIds.length + 2) * X_OFFSET, 0, opts, {
       event: 'workflow.completed',
     }),
   );
-  addConnection(connections, prevTail, endPing);
+
+  // Sinks (no outbound canonical edges to functional/end) need an explicit
+  // edge to __end_ping; routeEdge already wires the end-targeting edges,
+  // and any node whose post-ping has no outbound connection joins __end_ping.
+  wireDanglingTails(compiled, connections, hasPostPing);
 
   const errorWorkflow = buildErrorWorkflow(opts);
 
@@ -163,7 +195,67 @@ export function compileToN8n(
   };
 }
 
-function canonicalToN8nNode(node: CanonicalNode, x: number, y: number): N8nNode {
+function routeEdge(
+  edge: CanonicalEdge,
+  nodesById: Record<string, CanonicalNode>,
+  connections: N8nConnections,
+  hasPostPing: (type: string) => boolean,
+): void {
+  const fromNode = nodesById[edge.from.nodeId];
+  const toNode = nodesById[edge.to.nodeId];
+  if (!fromNode || !toNode) return;
+
+  // Edges originating at canonical `start` collapse into the start-ping →
+  // pre-target chain, which we already wired above (pre nodes have their
+  // own incoming edge from the start-ping ladder built below).
+  // Edges terminating at canonical `end` route to __end_ping.
+  const sourceIsStart = fromNode.type === 'start';
+  const targetIsEnd = toNode.type === 'end';
+
+  const sourceName = sourceIsStart
+    ? START_PING
+    : hasPostPing(fromNode.type)
+      ? `__post_${fromNode.id}`
+      : fromNode.id;
+  const outputIndex = sourceIsStart || hasPostPing(fromNode.type)
+    ? 0
+    : (PORT_INDEX[fromNode.type]?.[edge.from.port] ?? 0);
+
+  const targetName = targetIsEnd ? END_PING : `__pre_${toNode.id}`;
+
+  addConnection(connections, sourceName, targetName, 'main', outputIndex);
+}
+
+/**
+ * After routing all canonical edges, any non-end "tail" (a node whose post-
+ * ping or output has no consumer) needs to feed __end_ping so the workflow
+ * has a deterministic terminator. This covers workflows whose canonical
+ * graph has functional sink nodes connected only to canonical `end`.
+ */
+function wireDanglingTails(
+  compiled: CompiledWorkflow,
+  connections: N8nConnections,
+  hasPostPing: (type: string) => boolean,
+): void {
+  for (const id of Object.keys(compiled.nodes)) {
+    const node = compiled.nodes[id];
+    if (SYNTHETIC_TYPES.has(node.type)) continue;
+
+    const tailName = hasPostPing(node.type) ? `__post_${id}` : id;
+    const outbound = connections[tailName];
+    if (!outbound || !outbound.main || outbound.main.every((arr) => arr.length === 0)) {
+      // No outbound canonical wiring; route to __end_ping at index 0.
+      addConnection(connections, tailName, END_PING);
+    }
+  }
+}
+
+function canonicalToN8nNode(
+  node: CanonicalNode,
+  x: number,
+  y: number,
+  opts: N8nCompileOptions,
+): N8nNode {
   const params = node.config ?? {};
   switch (node.type) {
     case 'http.request':
@@ -175,33 +267,9 @@ function canonicalToN8nNode(node: CanonicalNode, x: number, y: number): N8nNode 
         parameters: params,
       };
     case 'llm.call':
-      return {
-        name: node.id,
-        type: HTTP_REQUEST,
-        typeVersion: HTTP_REQUEST_VERSION,
-        position: [x, y],
-        parameters: {
-          method: 'POST',
-          url: '={{ $env.N8N_WEBHOOK_BASE_URL }}/v1/agent/llm-call',
-          sendBody: true,
-          jsonBody: JSON.stringify(params),
-          ...params,
-        },
-      };
+      return agentHttpNode(node.id, `${opts.webhookBaseUrl}/v1/agent/llm-call`, params, opts.webhookSecret, [x, y]);
     case 'tool.call':
-      return {
-        name: node.id,
-        type: HTTP_REQUEST,
-        typeVersion: HTTP_REQUEST_VERSION,
-        position: [x, y],
-        parameters: {
-          method: 'POST',
-          url: '={{ $env.N8N_WEBHOOK_BASE_URL }}/v1/agent/tool-call',
-          sendBody: true,
-          jsonBody: JSON.stringify(params),
-          ...params,
-        },
-      };
+      return agentHttpNode(node.id, `${opts.webhookBaseUrl}/v1/agent/tool-call`, params, opts.webhookSecret, [x, y]);
     case 'branch':
       return {
         name: node.id,
@@ -242,9 +310,46 @@ function canonicalToN8nNode(node: CanonicalNode, x: number, y: number): N8nNode 
   }
 }
 
+/**
+ * Build an httpRequest node targeting a backend agent route (llm-call /
+ * tool-call). URL is baked at compile time (matches pingNode's approach);
+ * body uses stableJson for determinism; the canonical config is sent as
+ * the body payload but never overwrites our structural fields.
+ */
+function agentHttpNode(
+  name: string,
+  url: string,
+  canonicalConfig: Record<string, unknown>,
+  webhookSecret: string,
+  position: [number, number],
+): N8nNode {
+  return {
+    name,
+    type: HTTP_REQUEST,
+    typeVersion: HTTP_REQUEST_VERSION,
+    position,
+    parameters: {
+      method: 'POST',
+      url,
+      sendBody: true,
+      bodyContentType: 'json',
+      specifyBody: 'json',
+      jsonBody: stableJson(canonicalConfig),
+      sendHeaders: true,
+      headerParameters: {
+        parameters: [
+          { name: 'x-agent-webhook-secret', value: webhookSecret },
+          { name: 'content-type', value: 'application/json' },
+        ],
+      },
+      options: {
+        response: { response: { neverError: true } },
+      },
+    },
+  };
+}
+
 interface PingPayload {
-  runIdParam: string;
-  tenantIdParam: string;
   event: string;
   stepKey?: string;
 }
@@ -256,9 +361,12 @@ function pingNode(
   opts: N8nCompileOptions,
   payload: PingPayload,
 ): N8nNode {
+  // Runtime values (runId, tenantId, n8nExecutionId) come from the trigger
+  // input or n8n's execution context. The backend (Phase 2.4) launches the
+  // workflow with `{ runId, tenantId }` in the trigger payload.
   const bodyObj: Record<string, unknown> = {
-    runId: payload.runIdParam,
-    tenantId: payload.tenantIdParam,
+    runId: `={{ $('${TRIGGER_NAME}').item.json.runId }}`,
+    tenantId: `={{ $('${TRIGGER_NAME}').item.json.tenantId }}`,
     event: payload.event,
     timestamp: '={{ $now.toISO() }}',
     n8nExecutionId: '={{ $execution.id }}',
@@ -280,14 +388,8 @@ function pingNode(
       sendHeaders: true,
       headerParameters: {
         parameters: [
-          {
-            name: 'x-agent-webhook-secret',
-            value: opts.webhookSecret,
-          },
-          {
-            name: 'content-type',
-            value: 'application/json',
-          },
+          { name: 'x-agent-webhook-secret', value: opts.webhookSecret },
+          { name: 'content-type', value: 'application/json' },
         ],
       },
       options: {
@@ -311,8 +413,6 @@ function buildErrorWorkflow(opts: N8nCompileOptions): N8nWorkflow {
       parameters: {},
     },
     pingNode(pingName, X_OFFSET, 0, opts, {
-      runIdParam: opts.workflowVersionId,
-      tenantIdParam: opts.tenantId,
       event: 'workflow.failed',
     }),
   ];
@@ -339,11 +439,15 @@ function addConnection(
   from: string,
   to: string,
   outputName = 'main',
+  outputIndex = 0,
 ): void {
   const target: N8nConnectionTarget = { node: to, type: 'main', index: 0 };
   if (!conns[from]) conns[from] = {};
-  if (!conns[from][outputName]) conns[from][outputName] = [[]];
-  conns[from][outputName][0].push(target);
+  if (!conns[from][outputName]) conns[from][outputName] = [];
+  while (conns[from][outputName].length <= outputIndex) {
+    conns[from][outputName].push([]);
+  }
+  conns[from][outputName][outputIndex].push(target);
 }
 
 function sortConnections(conns: N8nConnections): N8nConnections {
