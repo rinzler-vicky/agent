@@ -19,6 +19,7 @@ import { Request } from 'express';
 import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
 import { ProposalsService } from './proposals.service';
 import { ServiceAccountScopeGuard } from './guards/service-account-scope.guard';
+import { ServiceAccountThrottlerGuard } from './guards/service-account-throttler.guard';
 import { CreateWorkflowProposalDto } from './dto/workflow-proposal.dto';
 import { WorkflowVersionResponseDto } from './dto/workflow-lifecycle.dto';
 
@@ -47,9 +48,20 @@ const toResponseDto = (row: any): WorkflowVersionResponseDto => ({
   createdAt: new Date(row.created_at).toISOString(),
 });
 
+// Guard order is load-bearing: JwtAuthGuard populates req.user → the
+// ServiceAccountThrottlerGuard keys the 30/min bucket on req.user.sub so
+// IP rotation can't bypass the budget → ServiceAccountScopeGuard then
+// enforces type+scope. Putting the throttler before the scope guard is
+// intentional: an agent flooding with the wrong scope should still consume
+// its budget (so the 30/min cap doesn't become an oracle that distinguishes
+// "wrong scope" from "scope OK but spec broken").
+@UseGuards(
+  JwtAuthGuard,
+  ServiceAccountThrottlerGuard,
+  ServiceAccountScopeGuard('workflows:propose'),
+)
 @ApiTags('workflow-proposals')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, ServiceAccountScopeGuard('workflows:propose'))
 @Controller({ path: 'workflow-proposals', version: '1' })
 export class ProposalsController {
   constructor(private readonly service: ProposalsService) {}

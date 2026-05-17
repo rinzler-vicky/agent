@@ -64,7 +64,7 @@ backend/package.json                          + rfc6902 ^5.2.0 (dependency-free)
 
 ## Trial / Errors
 
-- **Initial diff utility was hand-rolled**, then replaced with the `rfc6902` package after user feedback ("try using a npm package for json diff instead of writing your own"). Outcome: cleaner code, RFC-standard output, applyable via `applyPatch`. Lesson saved to memory under `feedback_prefer_npm_packages.md`.
+- **Initial diff utility was hand-rolled**, then replaced with the `rfc6902` package after user feedback ("try using a npm package for json diff instead of writing your own"). Outcome: cleaner code, RFC-standard output, applicable via `applyPatch`. Lesson saved to memory under `feedback_prefer_npm_packages.md`.
 - **First diff.spec used `log` node type** which isn't in the canonical node registry; surfaced 6 test failures at first run. Fixed by using the same `start → http.request → end` triplet that the canonical compiler spec uses.
 - **`workflow_versions.lifecycle_state` ENUM is implicit.** No DB CHECK constraint enforces the state list; the application layer is the gate. Considered adding a CHECK in this PR but kept consistent with how Phase 2.1 left it — a `CHECK` would be its own migration and Phase 5 may add more states (`rejected_with_appeal`, …).
 

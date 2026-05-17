@@ -60,6 +60,17 @@ const defRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
   ...overrides,
 });
 
+/**
+ * `withTenantClient` wraps every public method in `BEGIN; set_config; …; COMMIT`
+ * (or ROLLBACK on throw). Tests mock the wrapper bookends explicitly so the
+ * query sequence asserted here matches what runs in production.
+ */
+const mockTxnOpen = (client: { query: jest.Mock }) => {
+  client.query
+    .mockResolvedValueOnce({ rows: [] }) // BEGIN
+    .mockResolvedValueOnce({ rows: [] }); // set_config
+};
+
 describe('WorkflowsService', () => {
   let service: WorkflowsService;
   let client: { query: jest.Mock; release: jest.Mock };
@@ -86,17 +97,19 @@ describe('WorkflowsService', () => {
 
   describe('createDraft', () => {
     it('rejects when neither workflowDefId nor (slug+displayName) is provided', async () => {
-      client.query.mockResolvedValueOnce({ rows: [] }); // set_config
+      mockTxnOpen(client);
+      client.query.mockResolvedValueOnce({ rows: [] }); // ROLLBACK
       await expect(
         service.createDraft({ spec: VALID_SPEC }, { tenantId: TENANT, userId: USER }),
       ).rejects.toThrow(BadRequestException);
     });
 
     it('inserts a fresh def + draft and writes an audit row', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
         .mockResolvedValueOnce({ rows: [defRow({ id: DEF_ID })] }) // INSERT workflow_defs
-        .mockResolvedValueOnce({ rows: [draftRow()] }); // INSERT workflow_versions
+        .mockResolvedValueOnce({ rows: [draftRow()] }) // INSERT workflow_versions
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
 
       const result = await service.createDraft(
         { slug: 'wf-new', displayName: 'New WF', spec: VALID_SPEC },
@@ -112,14 +125,16 @@ describe('WorkflowsService', () => {
           resourceType: 'workflow_version',
           resourceId: VERSION_ID,
         }),
+        client,
       );
     });
 
     it('reuses an existing workflow_def when workflowDefId is provided', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
         .mockResolvedValueOnce({ rows: [defRow()] }) // loadDef
-        .mockResolvedValueOnce({ rows: [draftRow()] }); // INSERT workflow_versions
+        .mockResolvedValueOnce({ rows: [draftRow()] }) // INSERT workflow_versions
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
 
       const result = await service.createDraft(
         { workflowDefId: DEF_ID, spec: VALID_SPEC },
@@ -129,9 +144,10 @@ describe('WorkflowsService', () => {
     });
 
     it('404s when workflowDefId does not exist for tenant', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
-        .mockResolvedValueOnce({ rows: [] }); // loadDef → empty
+        .mockResolvedValueOnce({ rows: [] }) // loadDef → empty
+        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
       await expect(
         service.createDraft(
           { workflowDefId: DEF_ID, spec: VALID_SPEC },
@@ -144,11 +160,12 @@ describe('WorkflowsService', () => {
   describe('editDraft', () => {
     it('inserts a new draft and supersedes the prior one', async () => {
       const newRow = draftRow({ id: 'new-id', version_number: 3, parent_version_id: VERSION_ID });
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
         .mockResolvedValueOnce({ rows: [draftRow()] }) // loadVersion (prior draft)
         .mockResolvedValueOnce({ rows: [newRow] }) // INSERT new draft
-        .mockResolvedValueOnce({ rows: [] }); // UPDATE prior → superseded
+        .mockResolvedValueOnce({ rows: [] }) // UPDATE prior → superseded
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
 
       const result = await service.editDraft(
         VERSION_ID,
@@ -163,13 +180,15 @@ describe('WorkflowsService', () => {
           action: 'workflow.draft.updated',
           metadata: expect.objectContaining({ supersededVersionId: VERSION_ID }),
         }),
+        client,
       );
     });
 
     it('refuses to edit a non-draft version', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
-        .mockResolvedValueOnce({ rows: [draftRow({ lifecycle_state: 'published' })] });
+        .mockResolvedValueOnce({ rows: [draftRow({ lifecycle_state: 'published' })] })
+        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
       await expect(
         service.editDraft(
           VERSION_ID,
@@ -202,20 +221,20 @@ describe('WorkflowsService', () => {
     });
 
     it('rejects when spec fails to compile', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
-        .mockResolvedValueOnce({ rows: [draftRow({ spec: { schemaVersion: '1' } })] });
+        .mockResolvedValueOnce({ rows: [draftRow({ spec: { schemaVersion: '1' } })] }) // loadVersion
+        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
       await expect(
         service.publish(VERSION_ID, { tenantId: TENANT, userId: USER, role: 'admin' }),
       ).rejects.toThrow(BadRequestException);
     });
 
     it('promotes draft, demotes prior published, updates def, syncs n8n, audits', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
         .mockResolvedValueOnce({ rows: [draftRow()] }) // loadVersion
-        .mockResolvedValueOnce({ rows: [defRow()] }) // loadDef
-        .mockResolvedValueOnce({ rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rows: [defRow()] }) // loadDef FOR UPDATE
         .mockResolvedValueOnce({ rows: [{ id: PRIOR_PUBLISHED_ID }] }) // demote prior published
         .mockResolvedValueOnce({ rows: [] }) // promote target
         .mockResolvedValueOnce({ rows: [] }) // update def
@@ -246,12 +265,40 @@ describe('WorkflowsService', () => {
       );
     });
 
-    it('surfaces 502 with audit metadata when n8n sync fails post-commit', async () => {
+    it('locks workflow_defs row (FOR UPDATE) inside the publish transaction', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [draftRow()] }) // loadVersion
+        .mockResolvedValueOnce({ rows: [defRow()] }) // loadDef FOR UPDATE
+        .mockResolvedValueOnce({ rows: [] }) // demote prior
+        .mockResolvedValueOnce({ rows: [] }) // promote target
+        .mockResolvedValueOnce({ rows: [] }) // update def
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
+
+      sync.syncPublishedVersion.mockResolvedValueOnce({
+        action: 'created',
+        n8nWorkflowId: 'n8n-1',
+        canonicalHash: 'h',
+      });
+
+      await service.publish(VERSION_ID, { tenantId: TENANT, userId: USER, role: 'admin' });
+
+      // The loadDef call inside publish must include FOR UPDATE to prevent
+      // two concurrent publishes from each demoting the same active_version_id.
+      const defLookup = client.query.mock.calls.find(
+        ([sql]) =>
+          typeof sql === 'string' &&
+          /workflow_defs/i.test(sql) &&
+          /FOR UPDATE/i.test(sql),
+      );
+      expect(defLookup).toBeDefined();
+    });
+
+    it('surfaces 502 with audit metadata when n8n sync fails post-commit', async () => {
+      mockTxnOpen(client);
+      client.query
         .mockResolvedValueOnce({ rows: [draftRow()] })
         .mockResolvedValueOnce({ rows: [defRow()] })
-        .mockResolvedValueOnce({ rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
@@ -270,6 +317,32 @@ describe('WorkflowsService', () => {
         }),
       );
     });
+
+    it('does NOT report sync failure when only the success audit fails', async () => {
+      mockTxnOpen(client);
+      client.query
+        .mockResolvedValueOnce({ rows: [draftRow()] })
+        .mockResolvedValueOnce({ rows: [defRow()] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
+
+      sync.syncPublishedVersion.mockResolvedValueOnce({
+        action: 'created',
+        n8nWorkflowId: 'n8n-1',
+        canonicalHash: 'h',
+      });
+      // Sync succeeded but audit blows up — the route must NOT 502.
+      audit.log.mockRejectedValueOnce(new Error('audit DB hiccup'));
+
+      const result = await service.publish(VERSION_ID, {
+        tenantId: TENANT,
+        userId: USER,
+        role: 'admin',
+      });
+      expect(result.syncAction).toBe('created');
+    });
   });
 
   describe('rollback', () => {
@@ -280,9 +353,10 @@ describe('WorkflowsService', () => {
     });
 
     it('400s when no rollback target is recorded', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
-        .mockResolvedValueOnce({ rows: [defRow({ rollback_target_id: null })] });
+        .mockResolvedValueOnce({ rows: [defRow({ rollback_target_id: null })] }) // loadDef FOR UPDATE
+        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
       await expect(
         service.rollback(DEF_ID, { tenantId: TENANT, userId: USER, role: 'admin' }),
       ).rejects.toThrow(BadRequestException);
@@ -291,12 +365,11 @@ describe('WorkflowsService', () => {
     it('swaps active and rollback target, demotes current, re-syncs', async () => {
       const NEW_ACTIVE = '66666666-6666-6666-6666-666666666666';
       const CURRENT_ACTIVE = VERSION_ID;
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
         .mockResolvedValueOnce({
           rows: [defRow({ active_version_id: CURRENT_ACTIVE, rollback_target_id: NEW_ACTIVE })],
-        })
-        .mockResolvedValueOnce({ rows: [] }) // BEGIN
+        }) // loadDef FOR UPDATE
         .mockResolvedValueOnce({ rows: [] }) // promote target
         .mockResolvedValueOnce({ rows: [] }) // demote current
         .mockResolvedValueOnce({ rows: [] }) // update def
@@ -327,10 +400,11 @@ describe('WorkflowsService', () => {
     it('returns an empty patch when both version_numbers resolve to identical specs', async () => {
       const fromRow = { ...draftRow({ version_number: 1, id: 'v1' }), spec: VALID_SPEC };
       const toRow = { ...draftRow({ version_number: 2, id: 'v2' }), spec: VALID_SPEC };
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] }) // set_config
         .mockResolvedValueOnce({ rows: [draftRow()] }) // loadVersion anchor
-        .mockResolvedValueOnce({ rows: [fromRow, toRow] }); // both versions
+        .mockResolvedValueOnce({ rows: [fromRow, toRow] }) // both versions
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
 
       const result = await service.diff(VERSION_ID, 1, 2, { tenantId: TENANT, userId: USER });
       expect(result.patch).toEqual([]);
@@ -338,14 +412,34 @@ describe('WorkflowsService', () => {
     });
 
     it('404s when a requested version_number is missing', async () => {
+      mockTxnOpen(client);
       client.query
-        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [draftRow()] })
-        .mockResolvedValueOnce({ rows: [] }); // neither version found
+        .mockResolvedValueOnce({ rows: [] }) // neither version found
+        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
 
       await expect(
         service.diff(VERSION_ID, 1, 2, { tenantId: TENANT, userId: USER }),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    it('translates a compile failure on a draft spec into 400 (not 500)', async () => {
+      // Drafts intentionally allow invalid specs; calling diff against one
+      // must return a client error, not a server error.
+      const invalidRow = {
+        ...draftRow({ version_number: 1, id: 'v1' }),
+        spec: { schemaVersion: '1' }, // missing nodes/edges
+      };
+      const validRow = { ...draftRow({ version_number: 2, id: 'v2' }), spec: VALID_SPEC };
+      mockTxnOpen(client);
+      client.query
+        .mockResolvedValueOnce({ rows: [draftRow()] })
+        .mockResolvedValueOnce({ rows: [invalidRow, validRow] })
+        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
+
+      await expect(
+        service.diff(VERSION_ID, 1, 2, { tenantId: TENANT, userId: USER }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });

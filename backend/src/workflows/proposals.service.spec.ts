@@ -26,6 +26,12 @@ const PARENT_VERSION_ID = '44444444-4444-4444-4444-444444444444';
 const STEP_RUN_ID = '55555555-5555-5555-5555-555555555555';
 const WORKFLOW_RUN_ID = '66666666-6666-6666-6666-666666666666';
 
+const mockTxnOpen = (client: { query: jest.Mock }) => {
+  client.query
+    .mockResolvedValueOnce({ rows: [] }) // BEGIN
+    .mockResolvedValueOnce({ rows: [] }); // set_config
+};
+
 describe('ProposalsService', () => {
   let service: ProposalsService;
   let client: { query: jest.Mock; release: jest.Mock };
@@ -57,9 +63,10 @@ describe('ProposalsService', () => {
   });
 
   it('404s when the workflow_def is not in the caller tenant', async () => {
+    mockTxnOpen(client);
     client.query
-      .mockResolvedValueOnce({ rows: [] }) // set_config
-      .mockResolvedValueOnce({ rows: [] }); // def lookup empty
+      .mockResolvedValueOnce({ rows: [] }) // def lookup empty
+      .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
 
     await expect(
       service.create(
@@ -70,10 +77,11 @@ describe('ProposalsService', () => {
   });
 
   it('404s when the parent version is not owned by the def + tenant', async () => {
+    mockTxnOpen(client);
     client.query
-      .mockResolvedValueOnce({ rows: [] }) // set_config
       .mockResolvedValueOnce({ rows: [{ id: DEF_ID }] }) // def ok
-      .mockResolvedValueOnce({ rows: [] }); // parent lookup empty
+      .mockResolvedValueOnce({ rows: [] }) // parent lookup empty
+      .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
 
     await expect(
       service.create(
@@ -81,6 +89,82 @@ describe('ProposalsService', () => {
         { tenantId: TENANT, serviceAccountId: SA },
       ),
     ).rejects.toThrow(NotFoundException);
+  });
+
+  it('400s when the parent version is a draft (must derive from published/superseded)', async () => {
+    mockTxnOpen(client);
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: DEF_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: PARENT_VERSION_ID, lifecycle_state: 'draft' }] })
+      .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
+
+    await expect(
+      service.create(
+        { workflowDefId: DEF_ID, parentVersionId: PARENT_VERSION_ID, spec: VALID_SPEC },
+        { tenantId: TENANT, serviceAccountId: SA },
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('404s when stepRunId belongs to a different tenant or workflow_def', async () => {
+    mockTxnOpen(client);
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: DEF_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: PARENT_VERSION_ID, lifecycle_state: 'published' }] })
+      .mockResolvedValueOnce({
+        // Tenant mismatch — different workflow_def.
+        rows: [
+          {
+            status: 'failed',
+            run_id: WORKFLOW_RUN_ID,
+            tenant_id: TENANT,
+            workflow_def_id: 'some-other-def-id',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
+
+    await expect(
+      service.create(
+        {
+          workflowDefId: DEF_ID,
+          parentVersionId: PARENT_VERSION_ID,
+          spec: VALID_SPEC,
+          stepRunId: STEP_RUN_ID,
+        },
+        { tenantId: TENANT, serviceAccountId: SA },
+      ),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('400s when the referenced step_run is not in status=failed', async () => {
+    mockTxnOpen(client);
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: DEF_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: PARENT_VERSION_ID, lifecycle_state: 'published' }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            status: 'succeeded',
+            run_id: WORKFLOW_RUN_ID,
+            tenant_id: TENANT,
+            workflow_def_id: DEF_ID,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
+
+    await expect(
+      service.create(
+        {
+          workflowDefId: DEF_ID,
+          parentVersionId: PARENT_VERSION_ID,
+          spec: VALID_SPEC,
+          stepRunId: STEP_RUN_ID,
+        },
+        { tenantId: TENANT, serviceAccountId: SA },
+      ),
+    ).rejects.toThrow(BadRequestException);
   });
 
   it('lands a failure_recovery draft when a stepRunId is provided + writes an audit event', async () => {
@@ -99,11 +183,22 @@ describe('ProposalsService', () => {
       },
       created_at: new Date('2026-05-17T00:00:00Z'),
     };
+    mockTxnOpen(client);
     client.query
-      .mockResolvedValueOnce({ rows: [] }) // set_config
       .mockResolvedValueOnce({ rows: [{ id: DEF_ID }] }) // def ok
-      .mockResolvedValueOnce({ rows: [{ id: PARENT_VERSION_ID }] }) // parent ok
-      .mockResolvedValueOnce({ rows: [newRow] }); // INSERT
+      .mockResolvedValueOnce({ rows: [{ id: PARENT_VERSION_ID, lifecycle_state: 'published' }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            status: 'failed',
+            run_id: WORKFLOW_RUN_ID,
+            tenant_id: TENANT,
+            workflow_def_id: DEF_ID,
+          },
+        ],
+      }) // step verification
+      .mockResolvedValueOnce({ rows: [newRow] }) // INSERT
+      .mockResolvedValueOnce({ rows: [] }); // COMMIT
 
     const result = await service.create(
       {
@@ -122,11 +217,12 @@ describe('ProposalsService', () => {
     expect(result.proposal_source).toBe('failure_recovery');
     expect(result.proposal_context).toMatchObject({ stepRunId: STEP_RUN_ID });
 
-    // Validate the INSERT call carried proposal_source='failure_recovery' and
-    // the full proposal_context JSON (positions follow the SQL parameter order
-    // in proposals.service.ts:create — keep this in sync if columns change).
-    const insertCall = client.query.mock.calls[3];
-    const params = insertCall[1] as any[];
+    // Locate the INSERT call (the only one carrying the proposal_source param).
+    const insertCall = client.query.mock.calls.find(
+      ([sql]) => typeof sql === 'string' && /INSERT INTO workflow_versions/i.test(sql),
+    );
+    expect(insertCall).toBeDefined();
+    const params = insertCall![1] as any[];
     expect(params[4]).toBe('failure_recovery'); // proposal_source param
     expect(params[5]).toMatchObject({
       workflowRunId: WORKFLOW_RUN_ID,
@@ -134,6 +230,8 @@ describe('ProposalsService', () => {
       errorFingerprint: 'HTTP_TIMEOUT@http1',
     });
 
+    // The audit must run on the SAME client (atomicity: draft + audit
+    // succeed or fail together).
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'workflow.proposal.created',
@@ -145,6 +243,7 @@ describe('ProposalsService', () => {
           errorFingerprint: 'HTTP_TIMEOUT@http1',
         }),
       }),
+      client,
     );
   });
 
@@ -160,11 +259,12 @@ describe('ProposalsService', () => {
       proposal_context: {},
       created_at: new Date(),
     };
+    mockTxnOpen(client);
     client.query
-      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: DEF_ID }] })
-      .mockResolvedValueOnce({ rows: [{ id: PARENT_VERSION_ID }] })
-      .mockResolvedValueOnce({ rows: [newRow] });
+      .mockResolvedValueOnce({ rows: [{ id: PARENT_VERSION_ID, lifecycle_state: 'published' }] })
+      .mockResolvedValueOnce({ rows: [newRow] })
+      .mockResolvedValueOnce({ rows: [] }); // COMMIT
 
     const result = await service.create(
       { workflowDefId: DEF_ID, parentVersionId: PARENT_VERSION_ID, spec: VALID_SPEC },
@@ -172,7 +272,9 @@ describe('ProposalsService', () => {
     );
 
     expect(result.proposal_source).toBe('agent_reflection');
-    const insertCall = client.query.mock.calls[3];
-    expect(insertCall[1][4]).toBe('agent_reflection');
+    const insertCall = client.query.mock.calls.find(
+      ([sql]) => typeof sql === 'string' && /INSERT INTO workflow_versions/i.test(sql),
+    );
+    expect(insertCall![1][4]).toBe('agent_reflection');
   });
 });

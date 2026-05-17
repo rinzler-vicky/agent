@@ -8,6 +8,7 @@ import { WorkflowsController } from './workflows.controller';
 import { WorkflowsService } from './workflows.service';
 import { ProposalsController } from './proposals.controller';
 import { ProposalsService } from './proposals.service';
+import { ServiceAccountThrottlerGuard } from './guards/service-account-throttler.guard';
 
 /**
  * Phase 2 control plane wiring. Imported unconditionally so the n8n webhook
@@ -26,7 +27,13 @@ import { ProposalsService } from './proposals.service';
 @Module({
   imports: [AuditModule, AuthModule],
   controllers: [N8nWebhookController, WorkflowsController, ProposalsController],
-  providers: [N8nApiClient, N8nSyncService, WorkflowsService, ProposalsService],
+  providers: [
+    N8nApiClient,
+    N8nSyncService,
+    WorkflowsService,
+    ProposalsService,
+    ServiceAccountThrottlerGuard,
+  ],
   exports: [N8nSyncService, WorkflowsService, ProposalsService],
 })
 export class WorkflowsModule {}

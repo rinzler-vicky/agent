@@ -14,7 +14,7 @@ export interface WorkflowDiff {
  * Diff two workflow specs. We compile each spec first so the diff is
  * computed over the deterministic, canonicalized graph (compiled output
  * has sorted nodes/edges, resolved adjacency, stable sourceHash). The
- * resulting RFC 6902 patch can be applied by any conformant consumer via
+ * resulting RFC 6902 patch is applicable by any conformant consumer via
  * `rfc6902.applyPatch`, which is useful for Phase 5 reviewer tooling.
  *
  * Throws if either side fails to compile. Validation errors should be

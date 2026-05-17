@@ -7,7 +7,7 @@ import {
   Headers,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBody, ApiHeader, ApiOkResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBody, ApiHeader, ApiOkResponse, ApiProperty } from '@nestjs/swagger';
 import { IsEmail, IsString } from 'class-validator';
 import { AuthService } from './auth.service';
 
@@ -23,6 +23,7 @@ class LoginDto {
 }
 
 class TokenResponseDto {
+  @ApiProperty({ description: 'Signed JWT to include as `Authorization: Bearer <token>`' })
   access_token: string;
 }
 

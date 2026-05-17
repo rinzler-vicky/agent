@@ -75,7 +75,7 @@ Promotes `workflow_defs.rollback_target_id` back to `published`, demotes the cur
 
 ### `GET /v1/workflows/:id/diff?from=<verNum>&to=<verNum>`
 
-Returns an [RFC 6902 JSON Patch](https://datatracker.ietf.org/doc/html/rfc6902) describing the structural difference between two version_numbers of the same `workflow_def`. The diff is computed over the **compiled** workflows (deterministic, sorted-by-id) and is applyable via `rfc6902.applyPatch`.
+Returns an [RFC 6902 JSON Patch](https://datatracker.ietf.org/doc/html/rfc6902) describing the structural difference between two version_numbers of the same `workflow_def`. The diff is computed over the **compiled** workflows (deterministic, sorted-by-id) and is applicable via `rfc6902.applyPatch`.
 
 ```jsonc
 {

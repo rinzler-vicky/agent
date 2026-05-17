@@ -98,6 +98,9 @@ export class WorkflowsService {
   async createDraft(input: CreateDraftInput, ctx: ActorCtx): Promise<WorkflowVersionRow> {
     // We don't pre-compile here — `POST /v1/workflows` is a draft create, so
     // a half-built spec should still land. /validate runs the compiler on demand.
+    // The withTenantClient wrapper makes the (optional) def insert + version
+    // insert atomic; a failure on the version write rolls back the def insert
+    // so we never leave an orphaned workflow_defs row.
     return this.withTenantClient(ctx.tenantId, async (client) => {
       let defId = input.workflowDefId;
       if (!defId) {
@@ -129,18 +132,21 @@ export class WorkflowsService {
       );
       const row = inserted.rows[0];
 
-      await this.audit.log({
-        tenantId: ctx.tenantId,
-        actorId: ctx.userId,
-        actorType: 'user',
-        action: 'workflow.draft.created',
-        resourceType: 'workflow_version',
-        resourceId: row.id,
-        metadata: {
-          workflowDefId: defId,
-          versionNumber: row.version_number,
+      await this.audit.log(
+        {
+          tenantId: ctx.tenantId,
+          actorId: ctx.userId,
+          actorType: 'user',
+          action: 'workflow.draft.created',
+          resourceType: 'workflow_version',
+          resourceId: row.id,
+          metadata: {
+            workflowDefId: defId,
+            versionNumber: row.version_number,
+          },
         },
-      });
+        client,
+      );
 
       return row;
     });
@@ -151,6 +157,8 @@ export class WorkflowsService {
    * row carrying the replacement spec and demote the prior draft to
    * `superseded`. The new row gets a new version_number via the existing
    * trigger. Returns the new row (the prior id is now stale on the client).
+   * Insert + supersede + audit run inside one transaction (via
+   * withTenantClient), so a failure anywhere rolls back all three.
    */
   async editDraft(
     versionId: string,
@@ -180,19 +188,22 @@ export class WorkflowsService {
         [prior.id],
       );
 
-      await this.audit.log({
-        tenantId: ctx.tenantId,
-        actorId: ctx.userId,
-        actorType: 'user',
-        action: 'workflow.draft.updated',
-        resourceType: 'workflow_version',
-        resourceId: row.id,
-        metadata: {
-          workflowDefId: prior.workflow_def_id,
-          supersededVersionId: prior.id,
-          newVersionNumber: row.version_number,
+      await this.audit.log(
+        {
+          tenantId: ctx.tenantId,
+          actorId: ctx.userId,
+          actorType: 'user',
+          action: 'workflow.draft.updated',
+          resourceType: 'workflow_version',
+          resourceId: row.id,
+          metadata: {
+            workflowDefId: prior.workflow_def_id,
+            supersededVersionId: prior.id,
+            newVersionNumber: row.version_number,
+          },
         },
-      });
+        client,
+      );
 
       return row;
     });
@@ -237,7 +248,18 @@ export class WorkflowsService {
       const to = both.rows.find((r) => r.version_number === toVersionNumber);
       if (!from) throw new NotFoundException(`from version ${fromVersionNumber} not found`);
       if (!to) throw new NotFoundException(`to version ${toVersionNumber} not found`);
-      return diffSpecs(from.spec, to.spec, fromVersionNumber, toVersionNumber);
+      try {
+        return diffSpecs(from.spec, to.spec, fromVersionNumber, toVersionNumber);
+      } catch (err) {
+        // diffSpecs throws a plain Error when either stored spec fails to
+        // compile. Drafts intentionally allow invalid specs, so callers
+        // diffing a draft against a published row would otherwise see a 500.
+        // Translate to 400 with the compiler error string carried through.
+        throw new BadRequestException({
+          message: 'one or both stored specs failed to compile; cannot diff',
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
     });
   }
 
@@ -250,6 +272,12 @@ export class WorkflowsService {
    * n8n adapter — a sync failure surfaces 502 but leaves the audit row in
    * place so the operator can rerun publish or rollback. This mirrors the
    * non-atomic trade-off documented in Phase 2.3 (n8n-sync.service.ts:130).
+   *
+   * Concurrency: takes `SELECT ... FOR UPDATE` on the workflow_defs row so
+   * two simultaneous publishes for the same def serialize. Without the lock,
+   * both could read the same `active_version_id`, demote it, and both promote
+   * different targets — leaving multiple 'published' rows and a corrupted
+   * rollback chain.
    */
   async publish(versionId: string, ctx: ActorCtx & { role: string }) {
     if (ctx.role !== 'admin') throw new ForbiddenException('admin role required to publish');
@@ -271,16 +299,16 @@ export class WorkflowsService {
         });
       }
 
-      const def = await this.loadDef(client, target.workflow_def_id, ctx.tenantId);
+      const def = await this.loadDef(client, target.workflow_def_id, ctx.tenantId, true);
       if (!def) {
         // Should be impossible after loadVersion succeeded, but the FK leaves
         // it nominally reachable — fail closed.
         throw new NotFoundException('workflow_def disappeared mid-publish');
       }
 
-      await client.query('BEGIN');
       // Demote prior published of the same def (there can be only one
-      // 'published' row per def at a time).
+      // 'published' row per def at a time — enforced by the def-row lock
+      // above plus this UPDATE inside the same txn).
       const prior = await client.query<WorkflowVersionRow>(
         `UPDATE workflow_versions
             SET lifecycle_state = 'superseded'
@@ -304,26 +332,53 @@ export class WorkflowsService {
         [target.id, priorActive, def.id],
       );
 
-      await client.query('COMMIT');
-
       return {
         committed: { priorActiveId: priorActive, priorRows: prior.rows },
         target,
         def,
       };
-    }).catch(async (err) => {
-      // If anything threw inside the transactional block, the pg client is
-      // already released; rethrow.
-      throw err;
     });
 
     // Sync n8n AFTER the DB commit, mirroring 2.3's non-atomic trade-off.
+    // Keep audit-write OUTSIDE the sync try block: an audit failure after a
+    // successful sync should not be misreported as a sync failure.
+    let syncResult;
     try {
-      const syncResult = await this.sync.syncPublishedVersion(
-        target.id,
-        ctx.tenantId,
-        ctx.userId,
+      syncResult = await this.sync.syncPublishedVersion(target.id, ctx.tenantId, ctx.userId);
+    } catch (err) {
+      this.logger.error(
+        `n8n sync failed for workflow_version ${target.id}; DB state already published`,
+        err,
       );
+      // Best-effort failure audit; we still throw 502 regardless.
+      await this.audit
+        .log({
+          tenantId: ctx.tenantId,
+          actorId: ctx.userId,
+          actorType: 'user',
+          action: 'workflow.published',
+          resourceType: 'workflow_version',
+          resourceId: target.id,
+          metadata: {
+            workflowDefId: def.id,
+            versionNumber: target.version_number,
+            priorActiveId: committed.priorActiveId,
+            syncError: err instanceof Error ? err.message : String(err),
+          },
+        })
+        .catch((auditErr) =>
+          this.logger.error('failed to write publish failure audit row', auditErr),
+        );
+      throw new BadGatewayException(
+        `workflow published in DB but n8n sync failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    // Sync succeeded. Audit-write failure here must NOT bubble as a sync
+    // failure to the caller — log and swallow.
+    try {
       await this.audit.log({
         tenantId: ctx.tenantId,
         actorId: ctx.userId,
@@ -340,37 +395,16 @@ export class WorkflowsService {
           canonicalHash: syncResult.canonicalHash,
         },
       });
-      return {
-        workflowVersionId: target.id,
-        syncAction: syncResult.action,
-        n8nWorkflowId: syncResult.n8nWorkflowId,
-        canonicalHash: syncResult.canonicalHash,
-      };
-    } catch (err) {
-      this.logger.error(
-        `n8n sync failed for workflow_version ${target.id}; DB state already published`,
-        err,
-      );
-      await this.audit.log({
-        tenantId: ctx.tenantId,
-        actorId: ctx.userId,
-        actorType: 'user',
-        action: 'workflow.published',
-        resourceType: 'workflow_version',
-        resourceId: target.id,
-        metadata: {
-          workflowDefId: def.id,
-          versionNumber: target.version_number,
-          priorActiveId: committed.priorActiveId,
-          syncError: err instanceof Error ? err.message : String(err),
-        },
-      });
-      throw new BadGatewayException(
-        `workflow published in DB but n8n sync failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+    } catch (auditErr) {
+      this.logger.error('publish success audit write failed; sync already succeeded', auditErr);
     }
+
+    return {
+      workflowVersionId: target.id,
+      syncAction: syncResult.action,
+      n8nWorkflowId: syncResult.n8nWorkflowId,
+      canonicalHash: syncResult.canonicalHash,
+    };
   }
 
   // -----------------------------------------------------------------
@@ -380,13 +414,14 @@ export class WorkflowsService {
   /**
    * Restore the workflow_def to its prior published version. Driven by
    * `workflow_defs.rollback_target_id`, set by `publish()`. Re-runs n8n sync
-   * for the new active so the remote stays consistent.
+   * for the new active so the remote stays consistent. Same FOR UPDATE lock
+   * pattern as publish to keep the rollback chain consistent under concurrency.
    */
   async rollback(defId: string, ctx: ActorCtx & { role: string }) {
     if (ctx.role !== 'admin') throw new ForbiddenException('admin role required to rollback');
 
     const { newActive, demoted } = await this.withTenantClient(ctx.tenantId, async (client) => {
-      const def = await this.loadDef(client, defId, ctx.tenantId);
+      const def = await this.loadDef(client, defId, ctx.tenantId, true);
       if (!def) throw new NotFoundException(`workflow_def ${defId} not found`);
       const rollbackTargetId = def.rollback_target_id;
       if (!rollbackTargetId) {
@@ -394,7 +429,6 @@ export class WorkflowsService {
       }
       const currentActiveId = def.active_version_id;
 
-      await client.query('BEGIN');
       // Promote the rollback target back to 'published'.
       await client.query(
         `UPDATE workflow_versions
@@ -420,17 +454,40 @@ export class WorkflowsService {
           WHERE id = $3`,
         [rollbackTargetId, currentActiveId, def.id],
       );
-      await client.query('COMMIT');
 
       return { newActive: rollbackTargetId, demoted: currentActiveId };
     });
 
+    let syncResult;
     try {
-      const syncResult = await this.sync.syncPublishedVersion(
-        newActive,
-        ctx.tenantId,
-        ctx.userId,
+      syncResult = await this.sync.syncPublishedVersion(newActive, ctx.tenantId, ctx.userId);
+    } catch (err) {
+      await this.audit
+        .log({
+          tenantId: ctx.tenantId,
+          actorId: ctx.userId,
+          actorType: 'user',
+          action: 'workflow.rolled_back',
+          resourceType: 'workflow_version',
+          resourceId: newActive,
+          metadata: {
+            workflowDefId: defId,
+            fromVersionId: demoted,
+            toVersionId: newActive,
+            syncError: err instanceof Error ? err.message : String(err),
+          },
+        })
+        .catch((auditErr) =>
+          this.logger.error('failed to write rollback failure audit row', auditErr),
+        );
+      throw new BadGatewayException(
+        `rollback persisted in DB but n8n re-sync failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
+    }
+
+    try {
       await this.audit.log({
         tenantId: ctx.tenantId,
         actorId: ctx.userId,
@@ -445,32 +502,15 @@ export class WorkflowsService {
           syncAction: syncResult.action,
         },
       });
-      return {
-        rolledBackTo: newActive,
-        demoted: demoted ?? '',
-        syncAction: syncResult.action,
-      };
-    } catch (err) {
-      await this.audit.log({
-        tenantId: ctx.tenantId,
-        actorId: ctx.userId,
-        actorType: 'user',
-        action: 'workflow.rolled_back',
-        resourceType: 'workflow_version',
-        resourceId: newActive,
-        metadata: {
-          workflowDefId: defId,
-          fromVersionId: demoted,
-          toVersionId: newActive,
-          syncError: err instanceof Error ? err.message : String(err),
-        },
-      });
-      throw new BadGatewayException(
-        `rollback persisted in DB but n8n re-sync failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+    } catch (auditErr) {
+      this.logger.error('rollback success audit write failed; sync already succeeded', auditErr);
     }
+
+    return {
+      rolledBackTo: newActive,
+      demoted: demoted ?? '',
+      syncAction: syncResult.action,
+    };
   }
 
   // -----------------------------------------------------------------
@@ -478,8 +518,13 @@ export class WorkflowsService {
   // -----------------------------------------------------------------
 
   /**
-   * Acquire a pg client, set the per-tenant session variable, run `fn`,
-   * release. RLS on `workflow_defs` (and other tenant-scoped tables) reads
+   * Acquire a pg client, open a transaction, set the per-tenant session
+   * variable as TRANSACTION-LOCAL, run `fn`, COMMIT (or ROLLBACK on throw),
+   * release the client. The `is_local=true` arg to set_config is critical:
+   * without it the value persists for the session, leaking the tenant
+   * context to the next request that borrows this pooled connection.
+   *
+   * RLS on `workflow_defs` (and other tenant-scoped tables) reads
    * `app.tenant_id` via `current_setting`. `workflow_versions` itself has no
    * RLS — every read joins through `workflow_defs` and asserts tenant_id
    * explicitly (see `loadVersion`).
@@ -490,8 +535,20 @@ export class WorkflowsService {
   ): Promise<T> {
     const client = await this.pool.connect();
     try {
-      await client.query("SELECT set_config('app.tenant_id', $1, false)", [tenantId]);
-      return await fn(client);
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rbErr) {
+        // ROLLBACK failure shouldn't mask the original throw, but log it so
+        // we don't lose visibility into broken pooled connections.
+        this.logger.error('ROLLBACK failed in withTenantClient', rbErr);
+      }
+      throw err;
     } finally {
       client.release();
     }
@@ -517,9 +574,12 @@ export class WorkflowsService {
     client: PoolClient,
     defId: string,
     tenantId: string,
+    forUpdate = false,
   ): Promise<WorkflowDefRow | null> {
     const res = await client.query<WorkflowDefRow>(
-      `SELECT * FROM workflow_defs WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+      `SELECT * FROM workflow_defs WHERE id = $1 AND tenant_id = $2 LIMIT 1${
+        forUpdate ? ' FOR UPDATE' : ''
+      }`,
       [defId, tenantId],
     );
     return res.rows[0] ?? null;

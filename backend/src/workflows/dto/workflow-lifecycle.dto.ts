@@ -35,7 +35,10 @@ export class CreateWorkflowDraftDto {
   @MaxLength(128)
   displayName?: string;
 
-  @ApiProperty({ description: 'Canonical workflow spec (validated by the compiler before any DB write)' })
+  @ApiProperty({
+    description:
+      'Canonical workflow spec. Draft creation stores the spec as-is — validation runs on demand via `POST /v1/workflows/:id/validate` and is enforced at publish time, so a half-built spec can land as a draft.',
+  })
   @IsObject()
   spec: Record<string, unknown>;
 

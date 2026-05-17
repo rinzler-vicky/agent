@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -48,6 +49,16 @@ interface AuthedRequest extends Request {
 const requireTenantUser = (req: AuthedRequest): { tenantId: string; userId: string; role: string } => {
   if (!req.user?.sub || !req.user?.tenantId) {
     throw new BadRequestException('authenticated user context is missing');
+  }
+  // Lifecycle routes are human-facing. Service accounts must use
+  // `POST /v1/workflow-proposals` (scope-gated) rather than the unscoped
+  // human draft/edit/validate/diff endpoints — otherwise any service-account
+  // JWT could bypass the workflows:propose scope check by going through
+  // these routes.
+  if (req.user.type === 'service_account') {
+    throw new ForbiddenException(
+      'lifecycle routes are restricted to user tokens; service accounts must use POST /v1/workflow-proposals',
+    );
   }
   return { tenantId: req.user.tenantId, userId: req.user.sub, role: req.user.role };
 };

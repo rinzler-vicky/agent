@@ -94,39 +94,56 @@ describe('POST /v1/workflow-proposals (Phase 2.4 e2e)', () => {
     pool = app.get<Pool>(DATABASE_POOL);
 
     // Seed: tenant, workflow_def, published parent version, run + step row
-    // referenced by stepRunId so the proposal_context links a real failing step.
-    const tenantRes = await pool.query(
-      `INSERT INTO tenants (slug, display_name) VALUES ($1, $2) RETURNING id`,
-      [`phase-2-4-prop-${Date.now()}`, 'Phase 2.4 proposals'],
-    );
-    tenantId = tenantRes.rows[0].id;
+    // referenced by stepRunId so the proposal_context links a real failing
+    // step. All seed inserts share a single pooled client so the
+    // `app.tenant_id` session var stays set across RLS-protected tables
+    // (workflow_defs, workflow_runs, step_runs all have RLS via
+    // current_setting('app.tenant_id')). Each pool.query() would otherwise
+    // grab a fresh connection without the var set.
+    const seedClient = await pool.connect();
+    try {
+      const tenantRes = await seedClient.query(
+        `INSERT INTO tenants (slug, display_name) VALUES ($1, $2) RETURNING id`,
+        [`phase-2-4-prop-${Date.now()}`, 'Phase 2.4 proposals'],
+      );
+      tenantId = tenantRes.rows[0].id;
 
-    const defRes = await pool.query(
-      `INSERT INTO workflow_defs (tenant_id, slug, display_name) VALUES ($1, $2, $3) RETURNING id`,
-      [tenantId, `def-${Date.now()}`, 'Parent def'],
-    );
-    workflowDefId = defRes.rows[0].id;
+      await seedClient.query("SELECT set_config('app.tenant_id', $1, false)", [tenantId]);
 
-    const versionRes = await pool.query(
-      `INSERT INTO workflow_versions (workflow_def_id, spec, lifecycle_state, approval_state)
-       VALUES ($1, $2, 'published', 'approved') RETURNING id`,
-      [workflowDefId, VALID_SPEC],
-    );
-    parentVersionId = versionRes.rows[0].id;
+      const defRes = await seedClient.query(
+        `INSERT INTO workflow_defs (tenant_id, slug, display_name) VALUES ($1, $2, $3) RETURNING id`,
+        [tenantId, `def-${Date.now()}`, 'Parent def'],
+      );
+      workflowDefId = defRes.rows[0].id;
 
-    const runRes = await pool.query(
-      `INSERT INTO workflow_runs (tenant_id, workflow_version_id, status, execution_engine)
-       VALUES ($1, $2, 'failed', 'n8n') RETURNING id`,
-      [tenantId, parentVersionId],
-    );
-    workflowRunId = runRes.rows[0].id;
+      const versionRes = await seedClient.query(
+        `INSERT INTO workflow_versions (workflow_def_id, spec, lifecycle_state, approval_state)
+         VALUES ($1, $2, 'published', 'approved') RETURNING id`,
+        [workflowDefId, VALID_SPEC],
+      );
+      parentVersionId = versionRes.rows[0].id;
 
-    const stepRes = await pool.query(
-      `INSERT INTO step_runs (workflow_run_id, node_id, status)
-       VALUES ($1, $2, 'failed') RETURNING id`,
-      [workflowRunId, 'http1'],
-    );
-    stepRunId = stepRes.rows[0].id;
+      const runRes = await seedClient.query(
+        `INSERT INTO workflow_runs (tenant_id, workflow_version_id, status, execution_engine)
+         VALUES ($1, $2, 'failed', 'n8n') RETURNING id`,
+        [tenantId, parentVersionId],
+      );
+      workflowRunId = runRes.rows[0].id;
+
+      // step_runs columns are step_key + step_name (per migration 009);
+      // earlier drafts of this test mistakenly used `node_id` which doesn't
+      // exist in the schema.
+      const stepRes = await seedClient.query(
+        `INSERT INTO step_runs (workflow_run_id, step_key, step_name, status)
+         VALUES ($1, $2, $3, 'failed') RETURNING id`,
+        [workflowRunId, 'http1', 'http.request:http1'],
+      );
+      stepRunId = stepRes.rows[0].id;
+    } finally {
+      // Reset tenant context before returning client to pool.
+      await seedClient.query("SELECT set_config('app.tenant_id', '', false)").catch(() => {});
+      seedClient.release();
+    }
   });
 
   afterAll(async () => {
