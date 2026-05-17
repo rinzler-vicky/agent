@@ -10,6 +10,7 @@ Follow `AGENTS.md` first. This repository uses issues as executable specificatio
 - Keep changes minimal and phase-scoped.
 - Run and report relevant checks. Never say a check passed unless you ran it.
 - Update docs, tests, and decision records when behavior changes.
+- **Update `docs/wiki/**` pages** when changes affect installation, usage, architecture, troubleshooting, workflows, PR previews, ADRs, or contributing guidelines. The wiki is the source of truth for user and contributor documentation.
 - Record trial/errors and learnings in the PR body.
 
 ## Preferred response structure for coding tasks
