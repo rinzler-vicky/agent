@@ -51,4 +51,9 @@ Phase 1 (Foundation & Database Layer) — implementation complete, pending Phase
 * Set app.tenant_id session variable per database client in DatabaseModule.
 * Add integration/E2E tests (Supertest against live NestJS app).
 * Review ADR-0001 with stakeholders and get formal sign-off.
-* Begin Phase 2: Workflow Control Plane.
+
+## Phase 2 readiness gates (block implementation start)
+* [ ] Phase 1b closed (all bullets above checked off).
+* [ ] Self-evolution #39 merged — `01_backend_feature.yml` strengthened so future phase issues are born meeting Definition of Ready.
+* [ ] ADR-0002 (Workflow Control Plane) drafted with all 11 open questions resolved in the options table, `Status: Accepted` recorded by `rinzler-vicky`. Tracked by the ADR-0002 child issue under #25.
+* [ ] Then: begin Phase 2 implementation per the child issues linked from #25 (execution order: 2.1 schema → 2.2 compiler / 2.3 n8n adapter (parallel) → 2.4 lifecycle+proposal API → 2.5 execution+streaming+previews+failure-hook).
