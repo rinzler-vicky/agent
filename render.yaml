@@ -1,0 +1,72 @@
+# Render Blueprint — single source of truth for the Render service shape.
+#
+# How this gets applied:
+#   1. In Render dashboard: New > Blueprint > select this repo.
+#   2. Render reads this file. The service `name: agent` matches the existing
+#      Render service, so Blueprint ADOPTS it (does not create a duplicate).
+#      It creates the `agent-shared` env group, and `generateValue: true` only
+#      generates JWT_SECRET if not already set (so a manually-set value
+#      survives adoption). You'll be prompted once for the sync:false values
+#      (DATABASE_URL, AWS_*, S3_BUCKET, CORS_ORIGINS).
+#   3. From then on, every push to `main` redeploys the base; every PR creates
+#      a per-PR preview service (see .github/workflows/pr-preview.yml for the
+#      Neon branch wiring that completes preview provisioning).
+#
+# References:
+#   - https://render.com/docs/blueprint-spec
+#   - https://render.com/docs/preview-environments
+
+previews:
+  expireAfterDays: 7
+
+envVarGroups:
+  # Shared secrets that the base service AND every preview need. Group values
+  # propagate to previews; sync:false vars defined directly on a service do not.
+  - name: agent-shared
+    envVars:
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+
+services:
+  - type: web
+    name: agent
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: .
+    buildCommand: corepack pnpm install --frozen-lockfile && corepack pnpm --filter @agent/backend build
+    startCommand: pnpm --filter @agent/backend start
+    healthCheckPath: /v1/health
+    autoDeploy: true
+    branch: main
+    previews:
+      generation: automatic
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      # Render generates a unique 256-bit base64 value per service (base and
+      # each preview) at service-creation time, before the first deploy boots.
+      # This is what eliminates the JWT_SECRET race that broke PR #36.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 1h
+      - key: DATABASE_SSL
+        value: 'true'
+      - key: DB_POOL_MAX
+        value: '10'
+      # Set once on the base service (Neon main branch URL).
+      # On previews the pr-preview workflow PUTs the per-PR Neon branch URL.
+      - key: DATABASE_URL
+        sync: false
+      - fromGroup: agent-shared

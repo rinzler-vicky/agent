@@ -29,8 +29,7 @@ body:
     attributes:
       label: Non-goals
       description: Explicit out-of-scope items. Helps the implementer avoid scope creep and signals what is deferred to later phases.
-      value: |
-        -
+      placeholder: "- Item not in scope for this phase\n- Another deferred item"
     validations:
       required: true
   - type: textarea
@@ -38,8 +37,7 @@ body:
     attributes:
       label: Hard prerequisites (block-on)
       description: Gates that must be closed before any implementation PR for this phase may merge. Reference prior phases, ADRs, infrastructure provisioning, etc.
-      value: |
-        - [ ]
+      placeholder: "- [ ] ADR-XXXX Status: Accepted\n- [ ] Phase N closed\n- [ ] Infrastructure provisioned"
     validations:
       required: true
   - type: textarea
@@ -55,8 +53,7 @@ body:
     attributes:
       label: Reuse pointers
       description: File paths of existing utilities, services, schema patterns, or modules that this work must reuse rather than reimplement. Pulled from current repo observations during planning.
-      value: |
-        - `backend/src/...` —
+      placeholder: "- `backend/src/database/...` — shared pg pool\n- `backend/src/...` — describe reuse"
     validations:
       required: true
   - type: textarea
@@ -64,10 +61,7 @@ body:
     attributes:
       label: Rollback plan
       description: How is this phase rolled back if it must be reverted? Feature flag, paired migration-down per PR, PITR window, etc.
-      value: |
-        - Feature flag:
-        - Migrations: each PR ships its own down step
-        - DB recovery window:
+      placeholder: "- Feature flag: describe flag name and removal plan\n- Migrations: each PR ships its own down step\n- DB recovery window: describe PITR or snapshot strategy"
     validations:
       required: true
   - type: textarea
