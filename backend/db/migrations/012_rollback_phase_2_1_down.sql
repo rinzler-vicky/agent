@@ -4,11 +4,9 @@
 -- Drop composite indexes from migration 011
 DROP INDEX IF EXISTS idx_workflow_versions_def_lifecycle;
 DROP INDEX IF EXISTS idx_workflow_runs_version_created;
-DROP INDEX IF EXISTS idx_messages_conversation_sequence;
 DROP INDEX IF EXISTS idx_task_graphs_tenant_conversation;
 DROP INDEX IF EXISTS idx_proposal_triggers_tenant_status_created;
 DROP INDEX IF EXISTS idx_step_runs_run_status;
-DROP INDEX IF EXISTS idx_run_events_run_sequence_desc;
 DROP INDEX IF EXISTS idx_workflow_runs_tenant_conversation_created;
 
 -- Drop proposal schema from migration 010

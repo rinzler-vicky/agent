@@ -6,10 +6,6 @@
 CREATE INDEX idx_workflow_runs_tenant_conversation_created ON workflow_runs(tenant_id, conversation_id, created_at DESC)
   WHERE conversation_id IS NOT NULL;
 
--- Composite index for event tail queries
--- Hot path: GET /v1/runs/:run_id/events?limit=N (latest events first)
-CREATE INDEX idx_run_events_run_sequence_desc ON run_events(run_id, sequence DESC);
-
 -- Composite index for active step runs in a workflow run
 -- Hot path: Monitor in-progress steps for a run
 CREATE INDEX idx_step_runs_run_status ON step_runs(workflow_run_id, status)
@@ -25,10 +21,6 @@ CREATE INDEX idx_proposal_triggers_tenant_status_created ON proposal_triggers(te
 CREATE INDEX idx_task_graphs_tenant_conversation ON task_graphs(tenant_id, conversation_id)
   WHERE conversation_id IS NOT NULL;
 
--- Composite index for messages by conversation (ordered)
--- Hot path: GET /v1/conversations/:id/messages
-CREATE INDEX idx_messages_conversation_sequence ON messages(conversation_id, sequence_number ASC);
-
 -- Composite index for workflow runs by version (for rollback analysis)
 -- Hot path: List all runs of a specific workflow version
 CREATE INDEX idx_workflow_runs_version_created ON workflow_runs(workflow_version_id, created_at DESC);
@@ -37,3 +29,4 @@ CREATE INDEX idx_workflow_runs_version_created ON workflow_runs(workflow_version
 -- Hot path: List draft versions for a workflow
 CREATE INDEX idx_workflow_versions_def_lifecycle ON workflow_versions(workflow_def_id, lifecycle_state)
   WHERE lifecycle_state = 'draft';
+
