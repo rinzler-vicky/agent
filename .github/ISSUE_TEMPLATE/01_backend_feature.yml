@@ -18,13 +18,60 @@ body:
     validations:
       required: true
   - type: textarea
+    id: problem_statement
+    attributes:
+      label: Problem statement
+      description: What user, developer, or operational need does this phase address? Why is it being done now?
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: Explicit out-of-scope items. Helps the implementer avoid scope creep and signals what is deferred to later phases.
+      placeholder: "- Item not in scope for this phase\n- Another deferred item"
+    validations:
+      required: true
+  - type: textarea
+    id: hard_prerequisites
+    attributes:
+      label: Hard prerequisites (block-on)
+      description: Gates that must be closed before any implementation PR for this phase may merge. Reference prior phases, ADRs, infrastructure provisioning, etc.
+      placeholder: "- [ ] ADR-XXXX Status: Accepted\n- [ ] Phase N closed\n- [ ] Infrastructure provisioned"
+    validations:
+      required: true
+  - type: textarea
     id: architecture
     attributes:
       label: Approved architecture / ADR link
-      description: Link ADR or summarize approved design. If not approved, this issue is not ready.
-      placeholder: "ADR-0001 or N/A with reason"
+      description: Link the ADR file path (e.g., `docs/adr/ADR-0002-...md`). The ADR must be `Status: Accepted` before any implementation PR for this phase merges.
+      placeholder: "docs/adr/ADR-0002-... — Status: Accepted | Proposed | N/A with reason"
     validations:
       required: true
+  - type: textarea
+    id: reuse_pointers
+    attributes:
+      label: Reuse pointers
+      description: File paths of existing utilities, services, schema patterns, or modules that this work must reuse rather than reimplement. Identify these from current repo observations during planning.
+      placeholder: "- `backend/src/database/...` — shared pg pool\n- `backend/src/...` — describe reuse"
+    validations:
+      required: true
+  - type: textarea
+    id: rollback_plan
+    attributes:
+      label: Rollback plan
+      description: How is this phase rolled back if it must be reverted? Feature flag, paired migration-down per PR, PITR window, etc.
+      placeholder: "- Feature flag: describe flag name and removal plan\n- Migrations: each PR ships its own down step\n- PITR window: describe recovery window or snapshot strategy"
+    validations:
+      required: true
+  - type: textarea
+    id: self_modification_surface
+    attributes:
+      label: Self-modification surface (optional)
+      description: For phases that touch the governed-mutation model (ARCHITECTURE.md §3), which mutation Class (A/B/C/D) does this work enable or constrain? Leave blank if not applicable.
+      placeholder: "e.g., Phase 2 ships the Class C mechanism (agent-authored drafts); Phase 5 layers Class D approval policy."
+    validations:
+      required: false
   - type: textarea
     id: surfaces
     attributes:
