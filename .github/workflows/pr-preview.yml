@@ -116,17 +116,39 @@ jobs:
 
           CURRENT_ENV_VARS="$(render_get "/services/${PREVIEW_ID}/env-vars")"
           CURRENT_DB_URL="$(echo "${CURRENT_ENV_VARS}" | jq -r '[.[] | select(.envVar.key == "DATABASE_URL") | .envVar.value][0] // empty')"
+          CURRENT_JWT="$(echo "${CURRENT_ENV_VARS}" | jq -r '[.[] | select(.envVar.key == "JWT_SECRET") | .envVar.value][0] // empty')"
 
-          if [ "${CURRENT_DB_URL}" = "${NEON_DB_URL}" ]; then
-            echo "DATABASE_URL on preview already matches Neon branch URL; no env-var change."
+          # Decide the desired JWT_SECRET. Keep existing if it's already a real value.
+          # If empty or a known placeholder, generate one here. Once Blueprint is
+          # connected with generateValue:true, Render will generate it for new
+          # previews and this branch becomes a no-op for them.
+          DESIRED_JWT="${CURRENT_JWT}"
+          JWT_CHANGED=false
+          if [ -z "${CURRENT_JWT}" ] \
+             || [ "${CURRENT_JWT}" = "change-me-in-production" ] \
+             || [ "${CURRENT_JWT}" = "change-me-in-production-min-32-chars" ]; then
+            DESIRED_JWT="$(openssl rand -base64 48 | tr -d '\n')"
+            JWT_CHANGED=true
+          fi
+
+          DB_CHANGED=false
+          if [ "${CURRENT_DB_URL}" != "${NEON_DB_URL}" ]; then
+            DB_CHANGED=true
+          fi
+
+          if [ "${DB_CHANGED}" = "false" ] && [ "${JWT_CHANGED}" = "false" ]; then
+            echo "Preview env vars already match desired state; no PUT or redeploy needed."
           else
+            # Build the full env-vars list: preserve everything else, override
+            # DATABASE_URL and JWT_SECRET. PUT replaces all, so we must include
+            # every existing var.
             UPDATED_ENV_VARS="$(echo "${CURRENT_ENV_VARS}" | jq \
-              --arg key "DATABASE_URL" \
-              --arg val "${NEON_DB_URL}" \
+              --arg dbVal "${NEON_DB_URL}" \
+              --arg jwtVal "${DESIRED_JWT}" \
               '
                 [.[] | {key: .envVar.key, value: .envVar.value}]
-                | map(select(.key != $key))
-                + [{key: $key, value: $val}]
+                | map(select(.key != "DATABASE_URL" and .key != "JWT_SECRET"))
+                + [{key: "DATABASE_URL", value: $dbVal}, {key: "JWT_SECRET", value: $jwtVal}]
               ')"
 
             curl -fsSL -X PUT \
@@ -135,7 +157,9 @@ jobs:
               --data "${UPDATED_ENV_VARS}" \
               "${RENDER_API_BASE}/services/${PREVIEW_ID}/env-vars" > /dev/null
 
-            echo "PUT DATABASE_URL on Render preview service ${PREVIEW_ID}."
+            echo "PUT env vars on Render preview service ${PREVIEW_ID}:"
+            [ "${DB_CHANGED}" = "true" ] && echo "  - DATABASE_URL updated to Neon branch URL"
+            [ "${JWT_CHANGED}" = "true" ] && echo "  - JWT_SECRET generated (previous was empty/placeholder)"
 
             curl -fsSL -X POST \
               -H "Authorization: Bearer ${RENDER_API_KEY}" \
