@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS preview_environments (
   render_backend_service_id TEXT,
   render_n8n_service_id TEXT,
   neon_branch_name TEXT,
+  -- Neon branch id (e.g. `br-xxxxx`). The Neon DELETE branch endpoint takes
+  -- the id, not the name, so we capture it from createBranch's response on
+  -- agent-driven rows. PR-driven rows leave it NULL — they're torn down via
+  -- the neondatabase/delete-branch-action which accepts the branch name.
+  neon_branch_id TEXT,
   preview_url TEXT,
   n8n_url TEXT,
   expires_at TIMESTAMPTZ,
@@ -100,6 +105,39 @@ CREATE TRIGGER workflow_versions_proposal_notify
   EXECUTE FUNCTION notify_workflow_proposal();
 
 GRANT SELECT, INSERT, UPDATE ON preview_environments TO app_user;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- TTL sweep helper for PreviewTtlService (Phase 2.5b).
+--
+-- The sweep runs system-wide (cross-tenant) but the table is RLS-protected
+-- and the app pool connects as `app_user` (RLS-enforced). This SECURITY
+-- DEFINER function runs as its owner (the migration role, which is the
+-- table owner) — table owners bypass RLS by default unless `FORCE ROW LEVEL
+-- SECURITY` is set, which it is not here. So the function legitimately
+-- escapes the tenant_isolation policy for the cross-tenant sweep.
+--
+-- Pinned search_path: same hardening pattern as notify_workflow_proposal.
+-- Hard predicate set inside the function (not parameterizable) so callers
+-- cannot widen the scope.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION get_expired_agent_previews()
+RETURNS TABLE (
+  id UUID,
+  tenant_id UUID,
+  render_backend_service_id TEXT,
+  neon_branch_id TEXT,
+  neon_branch_name TEXT
+) AS $$
+  SELECT id, tenant_id, render_backend_service_id, neon_branch_id, neon_branch_name
+    FROM preview_environments
+   WHERE source = 'agent_failure_recovery'
+     AND status = 'ready'
+     AND expires_at < now()
+   ORDER BY expires_at
+   LIMIT 50;
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public;
+
+GRANT EXECUTE ON FUNCTION get_expired_agent_previews() TO app_user;
 
 COMMENT ON TABLE preview_environments IS
   'Unified record of PR-driven and agent-driven preview environments. Phase 2.5b.';

@@ -22,6 +22,7 @@ export interface PreviewEnvironment {
   status: PreviewStatus;
   render_backend_service_id: string | null;
   render_n8n_service_id: string | null;
+  neon_branch_id: string | null;
   neon_branch_name: string | null;
   preview_url: string | null;
   n8n_url: string | null;

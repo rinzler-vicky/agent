@@ -143,6 +143,11 @@ export class RenderApiClient {
     if (!this.apiKey) {
       throw new Error('RENDER_API_KEY must be set');
     }
+    if (!this.ownerId) {
+      // Render's POST /v1/services returns an opaque 400 if ownerId is empty;
+      // surface a clearer configuration error before we make the call.
+      throw new Error('RENDER_OWNER_ID must be set');
+    }
   }
 }
 

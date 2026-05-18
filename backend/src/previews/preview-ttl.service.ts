@@ -9,16 +9,23 @@ import { RenderApiClient } from './render-api.client';
 /**
  * Phase 2.5b — TTL teardown for agent-initiated previews.
  *
- * Every 15 minutes, scan `preview_environments` for rows where
- *   status='ready' AND source='agent_failure_recovery' AND expires_at < now()
+ * Every 30 minutes, call the SECURITY DEFINER helper
+ * `get_expired_agent_previews()` (migration 014) which returns expired
+ * agent-driven rows across all tenants — the function bypasses the
+ * preview_environments RLS policy legitimately because it's owned by the
+ * table owner and `FORCE ROW LEVEL SECURITY` is not set on the table.
+ *
  * For each row: best-effort delete the Render service + Neon branch, then
- * set status='expired' + torn_down_at=now() + audit `agent_preview.expired`.
+ * flip status='expired' + torn_down_at=now() + audit `agent_preview.expired`.
+ * External calls swallow errors so a row that fails external teardown still
+ * flips to `expired` and doesn't re-enter the sweep loop forever.
  *
  * PR-driven preview rows are NOT touched here — those are torn down by
- * pr-preview.yml on PR close, which also flips the row to 'torn_down'.
+ * pr-preview.yml on PR close, which flips the row to 'torn_down'.
  *
- * Multi-pod safety: an advisory lock per row prevents two pods from racing
- * the same teardown.
+ * Multi-pod safety: in practice we run a single replica; if that changes,
+ * add `pg_try_advisory_xact_lock(hashtext(row.id))` around the per-row
+ * UPDATE block.
  */
 @Injectable()
 export class PreviewTtlService {
@@ -31,9 +38,8 @@ export class PreviewTtlService {
     private readonly render: RenderApiClient,
   ) {}
 
-  // Every 30 minutes: a 24-hour TTL doesn't need a sharper cadence and 30m
-  // halves Render/Neon API churn vs 15m. CronExpression.EVERY_30_MINUTES is
-  // the @nestjs/schedule named constant.
+  // Every 30 minutes: a 24-hour default TTL doesn't need a sharper cadence
+  // and 30m halves Render/Neon API churn vs 15m.
   @Cron(CronExpression.EVERY_30_MINUTES, { name: 'agent-preview-ttl' })
   async sweep(): Promise<void> {
     const client = await this.pool.connect();
@@ -41,21 +47,15 @@ export class PreviewTtlService {
       id: string;
       tenant_id: string;
       render_backend_service_id: string | null;
+      neon_branch_id: string | null;
       neon_branch_name: string | null;
     }>;
     try {
-      // Use a privileged SELECT bypassing RLS: this job is system-scoped and
-      // sweeps across tenants. The DB role for the connection pool has full
-      // table access; RLS is only enforced after `set_config('app.tenant_id', ...)`
-      // — we deliberately skip that here.
-      const res = await client.query(
-        `SELECT id, tenant_id, render_backend_service_id, neon_branch_name
-           FROM preview_environments
-          WHERE status = 'ready'
-            AND source = 'agent_failure_recovery'
-            AND expires_at < now()
-          LIMIT 50`,
-      );
+      // SECURITY DEFINER helper bypasses RLS legitimately (see migration 014
+      // comment block). The function's WHERE predicate is hard-locked to
+      // agent_failure_recovery + ready + expired, so this call cannot be
+      // widened by callers.
+      const res = await client.query(`SELECT * FROM get_expired_agent_previews()`);
       rows = res.rows;
     } finally {
       client.release();
@@ -72,6 +72,7 @@ export class PreviewTtlService {
     id: string;
     tenant_id: string;
     render_backend_service_id: string | null;
+    neon_branch_id: string | null;
     neon_branch_name: string | null;
   }): Promise<void> {
     // Best-effort external teardown — log but don't throw on failure so the
@@ -86,15 +87,13 @@ export class PreviewTtlService {
         );
       }
     }
-    if (row.neon_branch_name) {
+    if (row.neon_branch_id) {
       try {
-        // Neon's DELETE accepts a branch id, but we stored the name. Look up
-        // by listing branches and matching name.
-        // For simplicity, we skip Neon teardown in v1 — Neon branches have
-        // their own expires_at (set to 14 days by neondatabase action) and
-        // will auto-clean. Document in PR_PREVIEWS.md.
-      } catch {
-        /* skipped */
+        await this.neon.deleteBranch(row.neon_branch_id);
+      } catch (err) {
+        this.logger.warn(
+          `Neon deleteBranch failed for ${row.neon_branch_id}: ${(err as Error).message}`,
+        );
       }
     }
 
@@ -119,6 +118,7 @@ export class PreviewTtlService {
           resourceId: row.id,
           metadata: {
             render_service_id: row.render_backend_service_id,
+            neon_branch_id: row.neon_branch_id,
             neon_branch_name: row.neon_branch_name,
           },
         },

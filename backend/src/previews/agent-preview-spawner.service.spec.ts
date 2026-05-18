@@ -110,9 +110,12 @@ const buildService = async (overrides?: {
     AGENT_PREVIEW_ENABLED: overrides?.enabled === false ? 'false' : 'true',
     MAX_ACTIVE_AGENT_PREVIEWS_PER_TENANT: String(overrides?.cap ?? 3),
     AGENT_PREVIEW_TTL_HOURS: '24',
+    RENDER_API_KEY: 'rnd-test-key',
     RENDER_REPO_URL: 'https://github.com/rinzler-vicky/agent',
     RENDER_BASE_BRANCH: 'main',
     RENDER_OWNER_ID: 'tea-test',
+    NEON_API_KEY: 'neon-test-key',
+    NEON_PROJECT_ID: 'neon-project-test',
   };
 
   const module: TestingModule = await Test.createTestingModule({
@@ -206,6 +209,74 @@ describe('AgentPreviewSpawnerService', () => {
     const insertCall = queries.find((q) => q.sql.startsWith('INSERT INTO preview_environments'));
     expect(insertCall).toBeDefined();
     expect(insertCall!.params).toEqual([TENANT, VERSION, '24']);
+
+    // JWT_SECRET must be present, non-empty, and not the documented placeholder
+    // — backend/src/main.ts hard-fails in production otherwise.
+    const createCall = render.createService.mock.calls[0][0] as {
+      envVars: Array<{ key: string; value: string }>;
+    };
+    const jwtEnv = createCall.envVars.find((e) => e.key === 'JWT_SECRET');
+    expect(jwtEnv).toBeDefined();
+    expect(jwtEnv!.value.length).toBeGreaterThan(0);
+    expect(jwtEnv!.value).not.toBe('change-me-in-production');
+
+    // neon_branch_id is captured from the createBranch response and persisted
+    // so PreviewTtlService can delete the branch on TTL expiry.
+    const completeCall = queries.find(
+      (q) => q.sql.includes('UPDATE preview_environments') && q.sql.includes("status = 'ready'"),
+    );
+    expect(completeCall).toBeDefined();
+    expect(completeCall!.params).toEqual([
+      'preview-1',
+      'svc-1',
+      'br-1',
+      'agent-preview-1',
+      'https://agent-preview-1.onrender.com',
+    ]);
+  });
+
+  it('onModuleInit throws when enabled=true but required env is missing', async () => {
+    // Spin up the module with enabled but no RENDER_OWNER_ID/RENDER_REPO_URL.
+    const buildMissing = async () => {
+      const client: MockClient = {
+        query: jest.fn().mockResolvedValue({ rows: [] }),
+        release: jest.fn(),
+      };
+      const pool = { connect: jest.fn().mockResolvedValue(client) };
+      const subscriber: SseSubscriberService = {
+        notifications: new EventEmitter(),
+      } as unknown as SseSubscriberService;
+      const cfg: Record<string, string> = {
+        AGENT_PREVIEW_ENABLED: 'true',
+        MAX_ACTIVE_AGENT_PREVIEWS_PER_TENANT: '3',
+        AGENT_PREVIEW_TTL_HOURS: '24',
+        RENDER_API_KEY: 'rnd-key',
+        // RENDER_OWNER_ID, RENDER_REPO_URL, RENDER_BASE_BRANCH, NEON_* missing
+      };
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          AgentPreviewSpawnerService,
+          { provide: DATABASE_POOL, useValue: pool },
+          { provide: SseSubscriberService, useValue: subscriber },
+          { provide: AuditService, useValue: { log: jest.fn() } },
+          { provide: NeonApiClient, useValue: { createBranch: jest.fn(), deleteBranch: jest.fn() } },
+          {
+            provide: RenderApiClient,
+            useValue: {
+              createService: jest.fn(),
+              getService: jest.fn(),
+              deleteService: jest.fn(),
+              putEnvVars: jest.fn(),
+              waitForServiceUrl: jest.fn(),
+            },
+          },
+          { provide: ConfigService, useValue: { get: (k: string) => cfg[k] ?? '' } },
+        ],
+      }).compile();
+      return module.get(AgentPreviewSpawnerService);
+    };
+    const service = await buildMissing();
+    expect(() => service.onModuleInit()).toThrow(/AGENT_PREVIEW_ENABLED=true/);
   });
 
   it('idempotency: when INSERT returns no rows (ON CONFLICT), does not call Render', async () => {

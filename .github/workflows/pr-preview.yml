@@ -4,10 +4,11 @@ name: PR Preview Environment
 # Blueprint feature. This workflow handles the pieces Blueprint cannot own:
 #   - Provisioning a per-PR Neon database branch and wiring its connection
 #     string into the Render backend preview.
-#   - Phase 2.5b: paths-filter-gated wiring of the n8n preview stack (n8n
-#     main + worker + keyvalue) declared in render.yaml. When the PR doesn't
-#     touch workflow/migration paths, the auto-spawned n8n preview services
-#     are DELETEd so the cost is only paid when needed.
+#   - Phase 2.5b: paths-filter-gated wiring of the single-container n8n
+#     preview service (`agent-n8n` in render.yaml; n8n runs in default
+#     single-process mode — no worker, no Redis). When the PR doesn't touch
+#     workflow/migration paths, the auto-spawned n8n preview service is
+#     DELETEd so the cost is only paid when needed.
 #   - Recording the resulting preview environment in the `preview_environments`
 #     table (migration 014) so backend services can correlate runs with the
 #     preview that hosted them.
@@ -297,19 +298,19 @@ jobs:
           exit 1
 
       # ─────────────────────────────────────────────────────────────────────
-      # Phase 2.5b — n8n preview stack handling
+      # Phase 2.5b — n8n preview handling (single-container `agent-n8n`)
       # ─────────────────────────────────────────────────────────────────────
-      # When paths-filter matches: wire the auto-spawned n8n services to the
+      # When paths-filter matches: wire the auto-spawned n8n service to the
       # per-PR Neon branch + post the n8n URL.
-      # When paths-filter does NOT match: delete the auto-spawned n8n services
-      # to avoid paying for compute we won't use. Render auto-spawned them via
-      # render.yaml's `previews.generation: automatic` — we tear them down via
+      # When paths-filter does NOT match: delete the auto-spawned n8n service
+      # to avoid paying for compute we won't use. Render auto-spawned it via
+      # render.yaml's `previews.generation: automatic` — we tear it down via
       # `DELETE /v1/services/{id}` (verified endpoint).
       #
       # Service discovery follows the same parent-id + name-suffix match used
-      # for the backend service. The four service names we look for are
-      # single n8n service is declared in render.yaml as `agent-n8n`
-      # (single-process mode; no worker, no Redis — see render.yaml comments).
+      # for the backend service. We look for a single service whose name
+      # starts with `agent-n8n` (default single-process mode; no worker, no
+      # Redis — see render.yaml comments).
 
       - name: Discover n8n preview service
         id: n8n_discover
@@ -321,8 +322,11 @@ jobs:
         run: |
           set -euo pipefail
           RENDER_API_BASE='https://api.render.com/v1'
+          # Render's GET /v1/services caps `limit` at 100 (verified against
+          # api-docs.render.com/reference/list-services). Anything above
+          # returns HTTP 400 — caused the original CI failure on this PR.
           SERVICES="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=200")"
+            "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")"
 
           N8N_ID=$(echo "${SERVICES}" | jq -r \
             --arg branch "${PR_BRANCH}" \
@@ -466,7 +470,14 @@ jobs:
             [ -n "${N8N_URL}" ] && N8N_URL_PARAM="'${N8N_URL}'"
           fi
 
+          # RLS: preview_environments has a tenant_isolation policy that
+          # filters by current_setting('app.tenant_id'). set_config with
+          # is_local=true only persists within the current transaction
+          # (PG docs: functions-admin), so the INSERT must run inside an
+          # explicit BEGIN/COMMIT in the same here-doc session.
           psql "${NEON_DB_URL}" -v ON_ERROR_STOP=1 <<SQL
+          BEGIN;
+          SELECT set_config('app.tenant_id', '${TENANT_ID}', true);
           INSERT INTO preview_environments
                 (tenant_id, pr_number, source, status,
                  render_backend_service_id, render_n8n_service_id,
@@ -476,6 +487,7 @@ jobs:
                  '${BACKEND_SERVICE_ID}', ${N8N_ID_PARAM},
                  '${NEON_BRANCH}', '${PREVIEW_URL}', ${N8N_URL_PARAM},
                  '${NEON_EXPIRES_AT}'::timestamptz);
+          COMMIT;
           SQL
 
       - name: Create GitHub Deployment
@@ -526,10 +538,11 @@ jobs:
 
             **n8n Editor:** {0}
 
-            > This PR touches workflow or migration code, so a per-PR n8n
-            > queue-mode stack (main + worker + keyvalue) was provisioned
-            > alongside the backend. Both share the per-PR Neon branch
-            > (backend uses public schema; n8n uses `n8n` schema).', steps.n8n.outputs.url) || '' }}
+            > This PR touches workflow or migration code, so a per-PR
+            > single-container `agent-n8n` service (default single-process
+            > mode — no worker, no Redis) was provisioned alongside the
+            > backend. Both share the per-PR Neon branch (backend uses
+            > `public` schema; n8n uses `n8n` schema).', steps.n8n.outputs.url) || '' }}
 
             ### 🗄️ Neon Database Branch
 
@@ -575,15 +588,32 @@ jobs:
         env:
           NEON_DB_URL: ${{ needs.build-and-deploy.outputs.neon_db_url }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          TENANT_ID: ${{ vars.PR_PREVIEW_TENANT_ID }}
         run: |
           set -euo pipefail
-          COUNT=$(psql "${NEON_DB_URL}" -tAc \
-            "SELECT count(*) FROM preview_environments WHERE pr_number = ${PR_NUMBER} AND source = 'pr';")
-          if [ "${COUNT}" -lt "1" ]; then
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::warning::PR_PREVIEW_TENANT_ID not set; skipping smoke COUNT (RLS would filter all rows)."
+            exit 0
+          fi
+          # RLS: set app.tenant_id in the same transaction as the SELECT so
+          # the tenant_isolation policy can evaluate (is_local=true scopes
+          # the value to the transaction only).
+          COUNT=$(psql "${NEON_DB_URL}" -tAv ON_ERROR_STOP=1 <<SQL
+          BEGIN;
+          SELECT set_config('app.tenant_id', '${TENANT_ID}', true);
+          SELECT count(*) FROM preview_environments WHERE pr_number = ${PR_NUMBER} AND source = 'pr';
+          COMMIT;
+          SQL
+          )
+          # psql in -tA mode prints set_config's value then the COUNT; take
+          # the last numeric line.
+          COUNT_N=$(echo "${COUNT}" | grep -E '^[0-9]+$' | tail -n1)
+          if [ -z "${COUNT_N}" ] || [ "${COUNT_N}" -lt "1" ]; then
             echo "::error::No preview_environments row found for PR ${PR_NUMBER}"
+            echo "psql output: ${COUNT}"
             exit 1
           fi
-          echo "Found ${COUNT} preview_environments row(s) for PR ${PR_NUMBER}."
+          echo "Found ${COUNT_N} preview_environments row(s) for PR ${PR_NUMBER}."
 
   teardown:
     name: Tear down preview
@@ -598,6 +628,7 @@ jobs:
           # UPDATE so we hit the surviving row rather than the about-to-be-gone branch.
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          TENANT_ID: ${{ vars.PR_PREVIEW_TENANT_ID }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -605,13 +636,21 @@ jobs:
             echo "::warning::DATABASE_URL secret not set; skipping preview_environments teardown UPDATE."
             exit 0
           fi
-          psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -c "
-            UPDATE preview_environments
-               SET status = 'torn_down', torn_down_at = now(), updated_at = now()
-             WHERE pr_number = ${PR_NUMBER}
-               AND source = 'pr'
-               AND status <> 'torn_down';
-          "
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::warning::PR_PREVIEW_TENANT_ID not set; skipping teardown UPDATE (RLS would no-op it)."
+            exit 0
+          fi
+          # RLS: same transaction-scoped set_config trick as the INSERT.
+          psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 <<SQL
+          BEGIN;
+          SELECT set_config('app.tenant_id', '${TENANT_ID}', true);
+          UPDATE preview_environments
+             SET status = 'torn_down', torn_down_at = now(), updated_at = now()
+           WHERE pr_number = ${PR_NUMBER}
+             AND source = 'pr'
+             AND status <> 'torn_down';
+          COMMIT;
+          SQL
 
       - name: Delete Neon branch
         uses: neondatabase/delete-branch-action@v3
