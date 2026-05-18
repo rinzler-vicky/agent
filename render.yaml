@@ -94,6 +94,11 @@ services:
   # default single-process mode — no worker, no Redis. Persistence still
   # uses the per-PR Neon branch's `n8n` schema so workflow state survives
   # n8n restarts within the preview's lifetime.
+  # NOTE: no `branch:` field — Render's Blueprint validator rejects
+  # `runtime: image` combined with `branch` (image-based services don't
+  # follow a git branch; `image.url` is the deploy artifact). Preview
+  # spawning is driven purely by `previews.generation: automatic`.
+  # (Verified against render.com/docs/blueprint-spec, May 2026.)
   - type: web
     name: agent-n8n
     runtime: image
@@ -103,7 +108,6 @@ services:
       url: docker.n8n.io/n8nio/n8n:1.79.0
     healthCheckPath: /healthz
     autoDeploy: false
-    branch: main
     previews:
       generation: automatic
     envVars:
