@@ -1,12 +1,14 @@
 status: IN_PROGRESS
-current_phase: 2.4
+current_phase: 2.5a
 active_domain: backend
 
 # AGENT STATE TRACKER
 This file serves as the hot memory. Read at the start of every execution; update before opening a Pull Request.
 
 ## Current Objective
-Phase 2.4 (#44 — Workflow Lifecycle and Proposal API) — implementation complete; PR open against `main`. Unit + service specs pass (176/176); integration tests parse and require `DATABASE_URL` in CI.
+Phase 2.5a (#45 split — backend execution engine + SSE + cooperative cancel + failure→proposal hook) — implementation complete; PR open against `main`. 216/216 unit tests pass. Typecheck + swagger clean. The CI/branch-preview pipeline + agent-worker drain are split into follow-up sub-issues per the user's "deferred = sub-issue" rule.
+
+Phase 2.4 (#44) merged in PR #64.
 Phase 1b — pending Neon provisioning and integration test execution.
 
 ## Decisions Made
@@ -22,6 +24,10 @@ Phase 1b — pending Neon provisioning and integration test execution.
 * PR Preview Environments (initial): Docker-based deployment with GHCR for container registry, Render deployment integration with manual PR preview mode. **Superseded by ADR-0002** — see below.
 * **ADR-0002 (proposed, 2026-05-17)**: Render Blueprint (`render.yaml`) + Neon database branching for ephemeral previews. GitHub is source of truth for service shape. `JWT_SECRET` is declared with `generateValue: true` so Render generates per-service secrets atomically — eliminates the imperative-API-patch race that broke PR #36. Per-PR Neon branches via `neondatabase/create-branch-action@v6`. GHCR Docker build removed (was unused by Render).
 * **ADR-0002 Workflow Control Plane (proposed, 2026-05-17)**: Phase 2 execution and proposal schema decisions finalized. Lifecycle state on workflow_versions (not separate drafts table), proposal metadata as columns (not 1:1 table), Neon branch per preview, n8n queue mode with Redis, execution_engine discriminator on workflow_runs, SSE + LISTEN/NOTIFY for events, proposal_triggers table for failure hooks, simple role:admin gate for Phase 2 publish.
+* **Phase 2.5a — n8n cancel is cooperative, not REST-driven (2026-05-18)**: n8n v1.79.0's `POST /executions/:id/stop` returns 404 in self-hosted ([n8n-io/n8n#14748](https://github.com/n8n-io/n8n/issues/14748)). Mitigation: compiler injects `__cancel_check_<id>` IF after each `__pre_*` ping; webhook handler returns `{cancelled}` flag derived from `workflow_runs.status`. Backend cancel endpoint flips DB state; the very next per-step ping short-circuits to `__end_cancelled`. Race window between cancel and the next ping is acceptable; guard `workflow_runs` transitions with `WHERE status NOT IN ('cancelled','succeeded','failed')` so a stray `workflow.completed` can't overwrite cancel.
+* **Phase 2.5a — n8n trigger via `POST /api/v1/workflows/:id/run` (2026-05-18)**: Confirmed against the n8n community thread. Compiler's `MANUAL_TRIGGER` node receives `{runId, tenantId, input}` from the call body; pre-pings extract via `$('__trigger').item.json.*`. Response `executionId` is best-effort; on omission we fall back to `GET /executions?workflowId&limit=1`.
+* **Phase 2.5a — single LISTEN client, two consumers (2026-05-18)**: `SseSubscriberService` owns the only long-lived `pg.Client` for `LISTEN run_events` and re-emits payloads on an in-process `EventEmitter`. `FailureHookService` listens on that emitter rather than opening a second connection. Multi-pod idempotency: advisory lock per run id + partial unique index on `proposal_triggers` (migration 013).
+* **Phase 2.5a — production frontend SSE auth deferred to Phase 6 (2026-05-18)**: Native browser `EventSource` cannot send `Authorization` headers ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/EventSource)). Backend integration tests use the Node `eventsource` package which supports headers; the production frontend will need cookie-JWT or one-shot signed URLs.
 
 ## Completed Tasks
 * Created backend/docs directory for comprehensive system documentation.
@@ -48,6 +54,12 @@ Phase 1b — pending Neon provisioning and integration test execution.
 * Created backend/scripts/migrate.js: simple migration runner tracking applied migrations in schema_migrations table. Updated in Phase 2.1 to support multiple rollback files (012_rollback_phase_2_1.sql, 006_rollback_down.sql).
 * Created backend/.env.example with all documented env vars. Updated in Phase 2.1 with WORKFLOW_CONTROL_PLANE_ENABLED flag, Redis, n8n, and Neon API configuration.
 * 24/24 unit tests passing (health, tenants, audit, auth, storage services).
+* **Phase 2.5a (Execution Engine + SSE + Failure Hook) — Issue #45 (split):**
+  - Migration 013: AFTER INSERT trigger on `run_events` publishing a compact `pg_notify('run_events', ...)` payload (run/tenant/sequence/event_type/step_run_id/event_id). Partial unique index on `proposal_triggers` (workflow_run_id, COALESCE(step_run_id, zero-uuid), error_fingerprint) WHERE status='pending'. `backend/scripts/migrate.js` updated.
+  - `backend/src/runs/`: new `RunsModule` with `POST/GET/cancel/events` routes. `RunsService` does the txn dance (INSERT → adapter trigger → stash provider id → audit → COMMIT). `SseSubscriberService` owns a dedicated `pg.Client` for `LISTEN run_events` and an in-process `EventEmitter` bridge. `FailureHookService` filters `workflow.failed`, reconciles via `N8nApiClient.getExecution`, walks per-node `runData`, writes one `proposal_triggers` row per failed node with the partial-index ON CONFLICT DO NOTHING guard.
+  - `backend/src/workflows/adapters/n8n/`: `N8nExecutionAdapter` (trigger only, no hard cancel). `N8nApiClient` adds `runWorkflow` and `listExecutions`. `n8n-compiler.ts` injects `__cancel_check_<id>` IF v2 after each `__pre_*` ping and a single shared `__end_cancelled` HTTP Request sink. Webhook controller's response now carries `{cancelled}`; new `workflow.cancelled` event handled idempotently; all `workflow_runs` status transitions guarded with `WHERE status NOT IN ('cancelled','succeeded','failed')`.
+  - 216/216 unit tests pass (40 new across the slice). Typecheck + swagger + lint clean. Wiki updated with the run lifecycle section, SSE reconnect contract, cooperative-cancel mechanics, failure-hook chain.
+  - Deferred to sub-issues (per user's "deferred = sub-issue" rule): branch-preview CI pipeline + agent-initiated previews (Phase 2.5b), agent worker that drains `proposal_triggers`, explicit n8n main-process restart resilience test, production-frontend SSE auth pattern (Phase 6), hard-cancel once n8n REST stop ships.
 * **Phase 2.4 (Workflow Lifecycle and Proposal API) — Issue #44:**
   - Added human draft + lifecycle controller (`WorkflowsController`) for `POST /v1/workflows`, `PATCH /v1/workflows/:id`, `POST /v1/workflows/:id/validate`, `POST /v1/workflows/:id/publish` (admin), `POST /v1/workflows/:id/rollback` (admin), `GET /v1/workflows/:id/diff`.
   - Added agent-facing `ProposalsController` for `POST /v1/workflow-proposals` (service-account JWT + `workflows:propose` scope; 30/min rate limit). Lands draft `workflow_versions` with `proposal_source='failure_recovery'` when `stepRunId` provided, `'agent_reflection'` otherwise. Audit event `workflow.proposal.created` links failing step → new draft via `resource_id`.
