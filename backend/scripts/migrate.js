@@ -46,7 +46,7 @@ async function run() {
     } else if (direction === 'down') {
       console.log('  ▼  Running down migration...');
       // Run rollback migrations in reverse order
-      const rollbackFiles = ['012_rollback_phase_2_1_down.sql', '006_rollback_down.sql'];
+      const rollbackFiles = ['013_rollback_down.sql', '012_rollback_phase_2_1_down.sql', '006_rollback_down.sql'];
       for (const file of rollbackFiles) {
         const filePath = path.join(migrationsDir, file);
         if (fs.existsSync(filePath)) {

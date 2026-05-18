@@ -76,7 +76,7 @@ export class N8nWebhookController {
   async receive(
     @Headers(SECRET_HEADER) secretHeader: string | undefined,
     @Body() body: N8nWebhookEvent,
-  ): Promise<{ ok: true; deduped?: boolean }> {
+  ): Promise<{ ok: true; deduped?: boolean; cancelled?: boolean }> {
     if (!verifyStaticSecret(secretHeader, this.webhookSecret)) {
       throw new UnauthorizedException('Invalid webhook secret');
     }
@@ -108,7 +108,8 @@ export class N8nWebhookController {
           payload: body.payload ?? null,
         },
       });
-      return { ok: true };
+      // No run context → cannot evaluate cancel state. Default false.
+      return { ok: true, cancelled: false };
     }
 
     if (!body.runId || !body.tenantId) {
@@ -129,6 +130,7 @@ export class N8nWebhookController {
       DEDUPE_NAMESPACE,
     );
 
+    let cancelled = false;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -147,11 +149,15 @@ export class N8nWebhookController {
         [eventId],
       );
       if (existing.rows.length > 0) {
+        // Even on dedup we must surface the current cancel state so the
+        // compiler-injected pre-ping can short-circuit on retry deliveries.
+        cancelled = await this.isCancelled(client, body.runId);
         await client.query('COMMIT');
-        return { ok: true, deduped: true };
+        return { ok: true, deduped: true, cancelled };
       }
 
       await this.applyEvent(client, body, eventId);
+      cancelled = await this.isCancelled(client, body.runId);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -178,7 +184,21 @@ export class N8nWebhookController {
       metadata: { event: body.event, stepKey: body.stepKey, n8nExecutionId: body.n8nExecutionId },
     });
 
-    return { ok: true };
+    return { ok: true, cancelled };
+  }
+
+  /**
+   * Phase 2.5a cooperative-cancel signal: returns true iff the run is in
+   * `cancelled` status. Called per webhook delivery so the compiler-injected
+   * `__pre_*` ping response can drive the per-step `__cancel_check_*` IF.
+   * Cheap single-row lookup; relies on RLS scope already set on `client`.
+   */
+  private async isCancelled(client: PoolClient, runId: string): Promise<boolean> {
+    const res = await client.query(
+      `SELECT 1 FROM workflow_runs WHERE id = $1 AND status = 'cancelled' LIMIT 1`,
+      [runId],
+    );
+    return res.rows.length > 0;
   }
 
   private async applyEvent(
@@ -209,23 +229,51 @@ export class N8nWebhookController {
       );
       stepRunId = upsert.rows[0]?.id ?? null;
     } else if (body.event === 'workflow.started') {
+      // Don't flip cancelled/terminal runs back to running.
       await client.query(
-        `UPDATE workflow_runs SET status = 'running', started_at = COALESCE(started_at, now()), updated_at = now()
-         WHERE id = $1`,
+        `UPDATE workflow_runs
+           SET status = 'running',
+               started_at = COALESCE(started_at, now()),
+               updated_at = now()
+         WHERE id = $1
+           AND status NOT IN ('cancelled', 'succeeded', 'failed')`,
         [body.runId],
       );
     } else if (body.event === 'workflow.completed') {
+      // A cancel that fires concurrent with workflow.completed must win:
+      // the user asked to cancel and the system acknowledged it.
       await client.query(
-        `UPDATE workflow_runs SET status = 'succeeded', completed_at = now(), updated_at = now()
-         WHERE id = $1`,
+        `UPDATE workflow_runs
+           SET status = 'succeeded',
+               completed_at = now(),
+               updated_at = now()
+         WHERE id = $1
+           AND status NOT IN ('cancelled', 'failed', 'succeeded')`,
         [body.runId],
       );
     } else if (body.event === 'workflow.failed') {
       await client.query(
-        `UPDATE workflow_runs SET status = 'failed', completed_at = now(),
-           error_details = $2, updated_at = now()
-         WHERE id = $1`,
+        `UPDATE workflow_runs
+           SET status = 'failed',
+               completed_at = now(),
+               error_details = $2,
+               updated_at = now()
+         WHERE id = $1
+           AND status NOT IN ('cancelled', 'succeeded', 'failed')`,
         [body.runId, body.payload ?? {}],
+      );
+    } else if (body.event === 'workflow.cancelled') {
+      // Emitted by the compiler-injected __end_cancelled HTTP Request when
+      // the per-step IF detects cancel. Idempotent: only stamps completed_at
+      // if the run was still pending/running. The cancel endpoint already
+      // flipped status to 'cancelled' synchronously; this writes the audit
+      // breadcrumb that confirms n8n actually halted.
+      await client.query(
+        `UPDATE workflow_runs
+           SET completed_at = COALESCE(completed_at, now()),
+               updated_at = now()
+         WHERE id = $1 AND status = 'cancelled'`,
+        [body.runId],
       );
     }
 

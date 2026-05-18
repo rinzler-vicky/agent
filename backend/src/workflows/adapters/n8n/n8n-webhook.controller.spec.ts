@@ -206,4 +206,75 @@ describe('N8nWebhookController.receive', () => {
       controller.receive(SECRET, { event: 'step.started', timestamp: freshTimestamp() } as any),
     ).rejects.toThrow(UnauthorizedException);
   });
+
+  describe('cooperative cancel response (Phase 2.5a)', () => {
+    function makeControllerWithCancelState(isCancelled: boolean) {
+      const queries: Array<{ sql: string; params: any[] }> = [];
+      const client = {
+        query: async (sql: string, params: any[] = []) => {
+          queries.push({ sql, params });
+          if (sql.includes("event_data->>'event_id'")) return { rows: [] };
+          if (sql.includes('INSERT INTO step_runs')) return { rows: [{ id: 'sr' }] };
+          // The cancel-state probe lands as: SELECT 1 FROM workflow_runs WHERE id=$1 AND status='cancelled'
+          if (sql.includes("status = 'cancelled'")) {
+            return isCancelled ? { rows: [{ '?column?': 1 }] } : { rows: [] };
+          }
+          return { rows: [] };
+        },
+        release: () => {},
+      };
+      const pool = { connect: async () => client } as any;
+      const audit: AuditService = { log: async () => {} } as any;
+      const api: N8nApiClient = { getExecution: async () => null } as any;
+      return {
+        controller: new N8nWebhookController(pool, mockConfig(), api, audit),
+        queries,
+      };
+    }
+
+    it('returns cancelled=true when workflow_runs.status is cancelled', async () => {
+      const { controller, queries } = makeControllerWithCancelState(true);
+      const r = await controller.receive(SECRET, event({ event: 'step.started', stepKey: 'a' }));
+      expect(r).toEqual({ ok: true, cancelled: true });
+      // Probe ran inside the txn
+      expect(queries.some((q) => q.sql.includes("status = 'cancelled'"))).toBe(true);
+    });
+
+    it('returns cancelled=false on the happy path', async () => {
+      const { controller } = makeControllerWithCancelState(false);
+      const r = await controller.receive(SECRET, event({ event: 'step.started', stepKey: 'a' }));
+      expect(r).toEqual({ ok: true, cancelled: false });
+    });
+
+    it('still surfaces cancelled flag when the event is deduped', async () => {
+      // Build a controller whose dedup probe finds the event AND status is cancelled
+      const queries: Array<{ sql: string; params: any[] }> = [];
+      const client = {
+        query: async (sql: string, params: any[] = []) => {
+          queries.push({ sql, params });
+          if (sql.includes("event_data->>'event_id'")) return { rows: [{ '?column?': 1 }] };
+          if (sql.includes("status = 'cancelled'")) return { rows: [{ '?column?': 1 }] };
+          return { rows: [] };
+        },
+        release: () => {},
+      };
+      const pool = { connect: async () => client } as any;
+      const audit: AuditService = { log: async () => {} } as any;
+      const api: N8nApiClient = { getExecution: async () => null } as any;
+      const c = new N8nWebhookController(pool, mockConfig(), api, audit);
+
+      const r = await c.receive(SECRET, event({ event: 'step.started', stepKey: 'a' }));
+      expect(r).toEqual({ ok: true, deduped: true, cancelled: true });
+    });
+
+    it('accepts the new workflow.cancelled event type', async () => {
+      const { controller, queries } = makeControllerWithCancelState(true);
+      const r = await controller.receive(SECRET, event({ event: 'workflow.cancelled' as any }));
+      expect(r.ok).toBe(true);
+      // run_events row written for the new type
+      expect(queries.some((q) =>
+        q.sql.includes('INSERT INTO run_events') && q.params[1] === 'workflow.cancelled',
+      )).toBe(true);
+    });
+  });
 });

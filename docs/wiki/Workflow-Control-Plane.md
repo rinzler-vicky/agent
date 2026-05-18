@@ -168,6 +168,64 @@ Every mutation writes exactly one `audit_events` row:
 | `workflow.published` | publish ok or sync failed | `priorActiveId`, `syncAction`, `syncError?` |
 | `workflow.rolled_back` | rollback ok or sync failed | `fromVersionId`, `toVersionId`, `syncError?` |
 | `workflow.proposal.created` | `POST /v1/workflow-proposals` | `parentVersionId`, `proposalSource`, `stepRunId`, `workflowRunId`, `errorFingerprint`, `canonicalHash` |
+| `workflow.run.started` | `POST /v1/workflow-runs` | `workflowVersionId`, `providerExecutionId`, `n8nWorkflowId` |
+| `workflow.run.cancelled` | `POST /v1/workflow-runs/:id/cancel` | `providerExecutionId` (cooperative cancel — see below) |
+| `workflow.run.failure_trigger_created` | failure hook landed a `proposal_triggers` row | `workflow_run_id`, `step_run_id`, `error_fingerprint` |
+| `failure_hook.skipped_no_provider_id` | failure with no stashed `providerExecutionId` | `reason` |
+
+---
+
+## Run lifecycle (Phase 2.5a)
+
+### Endpoints
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `POST` | `/v1/workflow-runs` | User/service JWT | Body: `CreateWorkflowRunDto`. Triggers n8n via `POST /api/v1/workflows/:id/run` and stashes `{providerExecutionId, n8nWorkflowId}` on `workflow_runs.input.__provider`. Returns the run row. |
+| `GET` | `/v1/workflow-runs/:id` | User/service JWT | Returns `{run, steps, counts}`. RLS-scoped. |
+| `GET` | `/v1/workflow-runs/:id/events` | User/service JWT | SSE stream. Pass `Last-Event-ID: <int>` on reconnect to resume. |
+| `POST` | `/v1/workflow-runs/:id/cancel` | `@Roles('admin')` | Cooperative cancel — see below. |
+
+### SSE event types
+
+| Type | When |
+|---|---|
+| `workflow.started`, `workflow.completed`, `workflow.failed` | terminal/lifecycle from n8n webhook |
+| `workflow.cancelled` | the compiler-injected `__end_cancelled` node fires after a cooperative cancel |
+| `step.started`, `step.completed` | from `__pre_*` / `__post_*` ping nodes |
+| `workflow.reconciled` | best-effort post-failure / post-completion reconcile against n8n `/executions/:id` |
+| `ping` | server heartbeat every `SSE_HEARTBEAT_MS` (default 15 s); clients can ignore |
+
+### Reconnect contract
+
+Each `MessageEvent.id` is the monotonic `run_events.sequence`. Standard `EventSource` preserves it as the `Last-Event-ID` header on auto-reconnect, which the server reads and backfills `WHERE sequence > lastEventId`. The backfill phase runs against the connection pool with `SET LOCAL app.tenant_id`; the live phase pulls from a dedicated long-lived `LISTEN run_events` client and re-fetches each row through the pool (RLS-scoped). De-dupe on `sequence` covers the backfill→live overlap.
+
+> **Frontend gotcha (deferred to Phase 6):** Native `EventSource` cannot send `Authorization` headers. Backend integration tests use the Node `eventsource` package which supports headers; the production frontend will need cookie-JWT or a one-shot signed-URL pattern. Tracked separately.
+
+### Cooperative cancellation
+
+n8n v1.79.0's `POST /executions/:id/stop` returns 404 in self-hosted ([n8n-io/n8n#14748](https://github.com/n8n-io/n8n/issues/14748)). We work around this by extending the compiler:
+
+1. Every step gets a `__pre_<id>` HTTP-Request ping (existing) and a new `__cancel_check_<id>` n8n-`if` v2 node.
+2. The webhook handler that receives `__pre_*` now returns `{ ok, cancelled }` where `cancelled = (workflow_runs.status = 'cancelled')`.
+3. `__cancel_check_<id>` reads `$json.cancelled`. Output 0 (true) routes to a single shared `__end_cancelled` HTTP Request that posts `workflow.cancelled`; output 1 (false) routes to the canonical step.
+
+So calling `POST /v1/workflow-runs/:id/cancel` flips `workflow_runs.status` synchronously; the next step the n8n flow tries to run reads `cancelled=true` from its pre-ping and short-circuits. There's a small race window (n8n may complete a step between the cancel call and the next ping) — webhook status transitions guard with `WHERE status NOT IN ('cancelled','succeeded','failed')` so a `workflow.completed` arriving after `cancelled` can't flip the state back.
+
+### Failure → proposal hook
+
+Migration 013 adds an `AFTER INSERT` trigger on `run_events` that `pg_notify`s `run_events` channel with a compact payload. `SseSubscriberService` owns the single `LISTEN` connection and re-emits payloads on an in-process `EventEmitter` so `FailureHookService` doesn't need a second long-lived client.
+
+`FailureHookService` filters for `workflow.failed`, takes a `pg_try_advisory_xact_lock` keyed on the run id (multi-pod safety), then:
+
+1. Calls `N8nApiClient.getExecution(providerExecutionId)?includeData=true`.
+2. Walks `data.resultData.runData` for per-node `error`s.
+3. Resolves each failed n8n node to a `step_runs` row via `step_key === nodeName`.
+4. Computes `error_fingerprint = sha1(name:message)[:16]` and `last_successful_checkpoint` from the most recent `step.completed` event.
+5. `INSERT … INTO proposal_triggers (…) ON CONFLICT (workflow_run_id, COALESCE(step_run_id, zero-uuid), error_fingerprint) WHERE status='pending' DO NOTHING` — covered by migration 013's partial unique index.
+6. One audit row per inserted trigger.
+
+The agent worker that drains `proposal_triggers` and calls `POST /v1/workflow-proposals` is **not** part of 2.5a — it's a separate sub-issue.
 
 ---
 

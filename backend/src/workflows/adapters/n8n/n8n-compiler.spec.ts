@@ -74,8 +74,41 @@ describe('compileToN8n', () => {
 
     expect(artifact.workflow.connections.__trigger.main[0][0].node).toBe('__start_ping');
     expect(artifact.workflow.connections.__start_ping.main[0][0].node).toBe('__pre_b_http');
-    expect(artifact.workflow.connections.__pre_b_http.main[0][0].node).toBe('b_http');
+    // Phase 2.5a: __pre_<id> now feeds the cancel-check IF rather than the
+    // canonical node directly. The IF's false branch (output 1) is the step.
+    expect(artifact.workflow.connections.__pre_b_http.main[0][0].node).toBe('__cancel_check_b_http');
+    expect(artifact.workflow.connections.__cancel_check_b_http.main[0][0].node).toBe('__end_cancelled');
+    expect(artifact.workflow.connections.__cancel_check_b_http.main[1][0].node).toBe('b_http');
     expect(artifact.workflow.connections.b_http.main[0][0].node).toBe('__post_b_http');
+  });
+
+  it('injects one cancel-check IF per step + a single shared __end_cancelled sink', () => {
+    const artifact = compileToN8n(compileOk(linear), OPTS);
+    const names = artifact.workflow.nodes.map((n) => n.name);
+    expect(names).toContain('__cancel_check_b_http');
+    expect(names).toContain('__cancel_check_c_set');
+    // Single shared sink, not one per step
+    expect(names.filter((n) => n === '__end_cancelled')).toHaveLength(1);
+
+    // IF is an n8n IF v2 node
+    const check = artifact.workflow.nodes.find((n) => n.name === '__cancel_check_b_http')!;
+    expect(check.type).toBe('n8n-nodes-base.if');
+    const conds = (check.parameters as any).conditions;
+    expect(conds.conditions[0].leftValue).toContain('$json.cancelled');
+    expect(conds.conditions[0].operator.type).toBe('boolean');
+
+    // Every step's cancel-check sends true → __end_cancelled and false → step
+    for (const step of ['b_http', 'c_set']) {
+      const conn = artifact.workflow.connections[`__cancel_check_${step}`];
+      expect(conn.main[0][0].node).toBe('__end_cancelled');
+      expect(conn.main[1][0].node).toBe(step);
+    }
+
+    // __end_cancelled is an HTTP Request posting `workflow.cancelled` to the
+    // webhook controller (reuses pingNode).
+    const sink = artifact.workflow.nodes.find((n) => n.name === '__end_cancelled')!;
+    expect(sink.type).toBe('n8n-nodes-base.httpRequest');
+    expect((sink.parameters as any).jsonBody).toContain('"event":"workflow.cancelled"');
   });
 
   it('emits a separate errorWorkflow with errorTrigger + failure ping', () => {

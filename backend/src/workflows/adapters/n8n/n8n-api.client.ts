@@ -94,6 +94,51 @@ export class N8nApiClient {
     }
   }
 
+  /**
+   * Trigger a manual-trigger workflow via the public REST API. The body is
+   * passed straight through to n8n as the manual trigger's input payload —
+   * downstream nodes read `$json.runId` / `$json.tenantId` / `$json.input` to
+   * propagate run correlation. n8n's response shape for this endpoint is not
+   * formally documented and varies across versions; the field is best-effort.
+   * If `executionId` is missing the caller should poll via `listExecutions`.
+   *
+   * Caveat: community reports intermittent failures where 2xx is returned but
+   * the manual trigger doesn't actually fire — see
+   * https://community.n8n.io/t/executing-a-workflow-via-api-call-without-webhook-or-cli-command/212895
+   */
+  async runWorkflow(
+    id: string,
+    body: { runId: string; tenantId: string; input?: unknown },
+    timeoutMs?: number,
+  ): Promise<{ executionId?: string; data?: unknown }> {
+    return this.request<{ executionId?: string; data?: unknown }>(
+      'POST',
+      `/workflows/${id}/run`,
+      body,
+      timeoutMs,
+    );
+  }
+
+  /**
+   * List executions for a given n8n workflow id, newest first. Used as the
+   * fallback when `runWorkflow` returns 2xx without `executionId`.
+   */
+  async listExecutions(params: {
+    workflowId: string;
+    limit?: number;
+  }): Promise<N8nExecutionResponse[]> {
+    const qs = new URLSearchParams({
+      workflowId: params.workflowId,
+      limit: String(params.limit ?? 1),
+    });
+    const res = await this.request<{ data?: N8nExecutionResponse[] } | N8nExecutionResponse[]>(
+      'GET',
+      `/executions?${qs.toString()}`,
+    );
+    if (Array.isArray(res)) return res;
+    return res.data ?? [];
+  }
+
   private async request<T>(
     method: string,
     path: string,

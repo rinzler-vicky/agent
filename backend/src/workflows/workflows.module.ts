@@ -3,6 +3,7 @@ import { AuditModule } from '@/audit/audit.module';
 import { AuthModule } from '@/auth/auth.module';
 import { N8nApiClient } from './adapters/n8n/n8n-api.client';
 import { N8nSyncService } from './adapters/n8n/n8n-sync.service';
+import { N8nExecutionAdapter } from './adapters/n8n/n8n-execution.adapter';
 import { N8nWebhookController } from './adapters/n8n/n8n-webhook.controller';
 import { WorkflowsController } from './workflows.controller';
 import { WorkflowsService } from './workflows.service';
@@ -30,10 +31,11 @@ import { ServiceAccountThrottlerGuard } from './guards/service-account-throttler
   providers: [
     N8nApiClient,
     N8nSyncService,
+    N8nExecutionAdapter,
     WorkflowsService,
     ProposalsService,
     ServiceAccountThrottlerGuard,
   ],
-  exports: [N8nSyncService, WorkflowsService, ProposalsService],
+  exports: [N8nSyncService, N8nExecutionAdapter, N8nApiClient, WorkflowsService, ProposalsService],
 })
 export class WorkflowsModule {}
