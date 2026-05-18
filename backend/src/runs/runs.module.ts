@@ -5,6 +5,7 @@ import { WorkflowsModule } from '@/workflows/workflows.module';
 import { RunsController } from './runs.controller';
 import { RunsService } from './runs.service';
 import { SseSubscriberService } from './sse-subscriber.service';
+import { FailureHookService } from './failure-hook.service';
 
 /**
  * Phase 2.5a — workflow execution engine on top of the n8n adapter.
@@ -18,7 +19,7 @@ import { SseSubscriberService } from './sse-subscriber.service';
 @Module({
   imports: [AuditModule, AuthModule, WorkflowsModule],
   controllers: [RunsController],
-  providers: [RunsService, SseSubscriberService],
+  providers: [RunsService, SseSubscriberService, FailureHookService],
   exports: [RunsService, SseSubscriberService],
 })
 export class RunsModule {}
