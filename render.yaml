@@ -12,6 +12,15 @@
 #      a per-PR preview service (see .github/workflows/pr-preview.yml for the
 #      Neon branch wiring that completes preview provisioning).
 #
+# Phase 2.5b note: an `agent-n8n` service block was previously declared
+# here to provide per-PR n8n previews. It was reverted after Blueprint
+# preview-spawn proved unreliable for `runtime: image` services (no
+# preview was ever created for an open PR despite re-adoption and PR
+# sync events). The backend paths-filter + preview_environments table
+# scaffolding from that phase remains in place; n8n previews via a
+# different mechanism are deferred to a future phase. See
+# .agentic/STATE.md for the decision record.
+#
 # References:
 #   - https://render.com/docs/blueprint-spec
 #   - https://render.com/docs/preview-environments
@@ -34,6 +43,7 @@ envVarGroups:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+
 
 services:
   - type: web

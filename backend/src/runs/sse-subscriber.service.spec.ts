@@ -304,11 +304,11 @@ describe('SseSubscriberService', () => {
   });
 
   describe('FailureHookService bridge', () => {
-    it('emits "event" on the in-process EventEmitter for every NOTIFY', async () => {
+    it('emits "run_events" on the in-process EventEmitter for every NOTIFY', async () => {
       const pool = makeMockPool();
       const svc = await buildService(pool);
       const received: NotifyPayload[] = [];
-      svc.notifications.on('event', (p: NotifyPayload) => received.push(p));
+      svc.notifications.on('run_events', (p: NotifyPayload) => received.push(p));
 
       const payload: NotifyPayload = {
         run_id: RUN,
@@ -329,12 +329,50 @@ describe('SseSubscriberService', () => {
       const pool = makeMockPool();
       const svc = await buildService(pool);
       const received: NotifyPayload[] = [];
-      svc.notifications.on('event', (p: NotifyPayload) => received.push(p));
+      svc.notifications.on('run_events', (p: NotifyPayload) => received.push(p));
       (svc as unknown as { onNotification: (m: { channel: string; payload?: string }) => void }).onNotification({
         channel: 'other_channel',
         payload: JSON.stringify({ run_id: RUN }),
       });
       expect(received).toEqual([]);
+    });
+  });
+
+  describe('workflow_proposals bridge (Phase 2.5b)', () => {
+    it('emits "workflow_proposals" on the EE when a proposal notify arrives', async () => {
+      const pool = makeMockPool();
+      const svc = await buildService(pool);
+      const received: any[] = [];
+      svc.notifications.on('workflow_proposals', (p: any) => received.push(p));
+
+      const payload = {
+        version_id: 'v-1',
+        tenant_id: TENANT,
+        workflow_def_id: 'wd-1',
+        parent_version_id: null,
+        proposal_source: 'failure_recovery',
+      };
+      (svc as unknown as { onNotification: (m: { channel: string; payload?: string }) => void }).onNotification({
+        channel: 'workflow_proposals',
+        payload: JSON.stringify(payload),
+      });
+      expect(received).toEqual([payload]);
+    });
+
+    it('does not fan out workflow_proposals to per-run SSE subjects', async () => {
+      const pool = makeMockPool();
+      const svc = await buildService(pool);
+      const sseFanouts: unknown[] = [];
+      (svc as unknown as { fanOut: (...args: unknown[]) => Promise<void> }).fanOut = jest.fn(
+        async (...args: unknown[]) => {
+          sseFanouts.push(args);
+        },
+      );
+      (svc as unknown as { onNotification: (m: { channel: string; payload?: string }) => void }).onNotification({
+        channel: 'workflow_proposals',
+        payload: JSON.stringify({ version_id: 'v-1', tenant_id: TENANT, proposal_source: 'failure_recovery' }),
+      });
+      expect(sseFanouts).toEqual([]);
     });
   });
 

@@ -1,10 +1,18 @@
 name: PR Preview Environment
 
-# All Render service shape (build/start commands, JWT_SECRET, preview enablement)
-# is declared in render.yaml at repo root via Render's Blueprint feature. This
-# workflow only handles the one piece Render Blueprint cannot own: provisioning
-# a per-PR Neon database branch and wiring its connection string into the Render
-# preview service.
+# Render service shape is declared in render.yaml at repo root via Render's
+# Blueprint feature. This workflow handles the pieces Blueprint cannot own:
+#   - Provisioning a per-PR Neon database branch and wiring its connection
+#     string into the Render backend preview.
+#   - Recording the resulting preview environment in the `preview_environments`
+#     table (migration 014) so backend services can correlate runs with the
+#     preview that hosted them.
+#   - Smoke-testing the preview when a PR touches migration/workflow paths
+#     (paths-filter gate retained from the original Phase 2.5b design).
+#
+# Phase 2.5b note: the per-PR n8n preview surface (Blueprint-spawned
+# agent-n8n + workflow wiring) was reverted. See render.yaml and
+# .agentic/STATE.md for context.
 
 on:
   pull_request:
@@ -21,14 +29,32 @@ jobs:
   build-and-deploy:
     name: Provision Neon branch and wire Render preview
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     if: github.event.pull_request.draft == false && github.event.action != 'closed'
+    outputs:
+      migration_or_workflow_changed: ${{ steps.filter.outputs.n8n }}
+      preview_url: ${{ steps.preview.outputs.url }}
+      neon_db_url: ${{ steps.neon.outputs.db_url }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+
+      # Phase 2.5b — gate n8n provisioning on workflow/migration path changes.
+      # `dorny/paths-filter@v3` works on pull_request triggers out of the box
+      # (verified against the action's README, May 2026).
+      - name: Detect workflow/migration changes (paths-filter)
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            n8n:
+              - 'backend/db/migrations/**'
+              - 'backend/src/workflows/**'
+              - 'infra/docker-compose.n8n.yml'
+              - 'render.yaml'
 
       - name: Apply render-preview label (PR tracking; previews auto-created by Render Blueprint)
         env:
@@ -199,6 +225,7 @@ jobs:
 
           echo "preview_id=${PREVIEW_ID}" >> "$GITHUB_OUTPUT"
           echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+          echo "owner_id=${OWNER_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve preview URL if not yet known
         id: preview
@@ -270,6 +297,52 @@ jobs:
           echo "Preview API did not become ready in time."
           exit 1
 
+      # Phase 2.5b note: the n8n preview surface (Discover/Wire/Teardown
+      # steps for `agent-n8n`) was reverted. Render Blueprint preview-spawn
+      # for `runtime: image` services proved unreliable in practice — see
+      # .agentic/STATE.md. The paths-filter `n8n` output is retained as a
+      # gate for the smoke-test job in case future migration/workflow PRs
+      # need different smoke-test coverage.
+
+      - name: Record preview environment in DB
+        env:
+          NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BACKEND_SERVICE_ID: ${{ steps.render.outputs.preview_id }}
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+          NEON_BRANCH: preview/pr-${{ github.event.pull_request.number }}
+          NEON_EXPIRES_AT: ${{ steps.neon_expiry.outputs.expires_at }}
+          TENANT_ID: ${{ vars.PR_PREVIEW_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::warning::PR_PREVIEW_TENANT_ID variable not set; skipping preview_environments INSERT."
+            echo "Set this once via: gh variable set PR_PREVIEW_TENANT_ID --body <uuid-of-the-platform-tenant>"
+            exit 0
+          fi
+
+          # RLS: preview_environments has a tenant_isolation policy that
+          # filters by current_setting('app.tenant_id'). set_config with
+          # is_local=true only persists within the current transaction
+          # (PG docs: functions-admin), so the INSERT must run inside an
+          # explicit BEGIN/COMMIT in the same here-doc session.
+          # Note: render_n8n_service_id and n8n_url columns are left NULL —
+          # the n8n preview surface was reverted (see render.yaml comment).
+          psql "${NEON_DB_URL}" -v ON_ERROR_STOP=1 <<SQL
+          BEGIN;
+          SELECT set_config('app.tenant_id', '${TENANT_ID}', true);
+          INSERT INTO preview_environments
+                (tenant_id, pr_number, source, status,
+                 render_backend_service_id,
+                 neon_branch_name, preview_url, expires_at)
+              VALUES
+                ('${TENANT_ID}'::uuid, ${PR_NUMBER}, 'pr', 'ready',
+                 '${BACKEND_SERVICE_ID}',
+                 '${NEON_BRANCH}', '${PREVIEW_URL}',
+                 '${NEON_EXPIRES_AT}'::timestamptz);
+          COMMIT;
+          SQL
+
       - name: Create GitHub Deployment
         uses: actions/github-script@v7
         with:
@@ -327,12 +400,102 @@ jobs:
             > and a unique `JWT_SECRET` generated by Render Blueprint. Both are cleaned up on PR close.
             > If schema migrations ran on this branch, see the schema-diff comment above.
 
+  # Phase 2.5b — smoke test runs when a PR touches migration/workflow paths.
+  # Hits the backend preview's health endpoint and verifies a
+  # preview_environments row was recorded. The smoke test deliberately does
+  # NOT exercise the agent-spawner end-to-end (that would require minting a
+  # service-account JWT against the preview's regenerated JWT_SECRET —
+  # deferred to manual QA).
+  smoke-test:
+    name: Smoke test PR preview
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    if: needs.build-and-deploy.outputs.migration_or_workflow_changed == 'true'
+    timeout-minutes: 10
+
+    steps:
+      - name: Probe backend health
+        env:
+          PREVIEW_URL: ${{ needs.build-and-deploy.outputs.preview_url }}
+        run: |
+          set -euo pipefail
+          STATUS=$(curl -sS -o /tmp/health.json -w "%{http_code}" "${PREVIEW_URL}/v1/health")
+          if [ "${STATUS}" != "200" ]; then
+            echo "Backend health probe returned ${STATUS}"
+            cat /tmp/health.json || true
+            exit 1
+          fi
+          cat /tmp/health.json
+          echo
+
+      - name: Verify preview_environments row exists
+        env:
+          NEON_DB_URL: ${{ needs.build-and-deploy.outputs.neon_db_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TENANT_ID: ${{ vars.PR_PREVIEW_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::warning::PR_PREVIEW_TENANT_ID not set; skipping smoke COUNT (RLS would filter all rows)."
+            exit 0
+          fi
+          # RLS: set app.tenant_id in the same transaction as the SELECT so
+          # the tenant_isolation policy can evaluate (is_local=true scopes
+          # the value to the transaction only).
+          COUNT=$(psql "${NEON_DB_URL}" -tAv ON_ERROR_STOP=1 <<SQL
+          BEGIN;
+          SELECT set_config('app.tenant_id', '${TENANT_ID}', true);
+          SELECT count(*) FROM preview_environments WHERE pr_number = ${PR_NUMBER} AND source = 'pr';
+          COMMIT;
+          SQL
+          )
+          # psql in -tA mode prints set_config's value then the COUNT; take
+          # the last numeric line.
+          COUNT_N=$(echo "${COUNT}" | grep -E '^[0-9]+$' | tail -n1)
+          if [ -z "${COUNT_N}" ] || [ "${COUNT_N}" -lt "1" ]; then
+            echo "::error::No preview_environments row found for PR ${PR_NUMBER}"
+            echo "psql output: ${COUNT}"
+            exit 1
+          fi
+          echo "Found ${COUNT_N} preview_environments row(s) for PR ${PR_NUMBER}."
+
   teardown:
     name: Tear down preview
     runs-on: ubuntu-latest
     if: github.event.action == 'closed'
 
     steps:
+      - name: Mark preview_environments row torn_down
+        env:
+          # On teardown the Neon branch is being deleted in the next step;
+          # use the production DATABASE_URL (set as a repo secret) for the
+          # UPDATE so we hit the surviving row rather than the about-to-be-gone branch.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TENANT_ID: ${{ vars.PR_PREVIEW_TENANT_ID }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::warning::DATABASE_URL secret not set; skipping preview_environments teardown UPDATE."
+            exit 0
+          fi
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::warning::PR_PREVIEW_TENANT_ID not set; skipping teardown UPDATE (RLS would no-op it)."
+            exit 0
+          fi
+          # RLS: same transaction-scoped set_config trick as the INSERT.
+          psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 <<SQL
+          BEGIN;
+          SELECT set_config('app.tenant_id', '${TENANT_ID}', true);
+          UPDATE preview_environments
+             SET status = 'torn_down', torn_down_at = now(), updated_at = now()
+           WHERE pr_number = ${PR_NUMBER}
+             AND source = 'pr'
+             AND status <> 'torn_down';
+          COMMIT;
+          SQL
+
       - name: Delete Neon branch
         uses: neondatabase/delete-branch-action@v3
         continue-on-error: true
@@ -385,8 +548,9 @@ jobs:
           body: |
             ## 🧹 Preview Environment Torn Down
 
-            - Render preview service: deleted by Render (PR closed)
+            - Render preview services (backend, n8n stack if any): deleted by Render (PR closed)
             - Neon branch `preview/pr-${{ github.event.pull_request.number }}`: deleted
+            - `preview_environments` row: marked `torn_down`
             - GitHub deployment: marked inactive
 
             **Reason:** PR was ${{ github.event.pull_request.merged && 'merged' || 'closed' }}.
