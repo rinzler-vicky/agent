@@ -56,6 +56,7 @@ export type N8nWebhookEventType =
   | 'workflow.started'
   | 'workflow.completed'
   | 'workflow.failed'
+  | 'workflow.cancelled'
   | 'step.started'
   | 'step.completed';
 
@@ -63,11 +64,17 @@ export type N8nWebhookEventType =
  * Runtime tuple of every allowed webhook event type.
  * Derive N8nWebhookEventType from this so there is a single source of truth
  * that works at both compile time (the union type) and runtime (the array).
+ *
+ * Phase 2.5a adds `workflow.cancelled`: emitted by the compiler-injected
+ * `__end_cancelled` HTTP Request node after a per-step `__pre_*` ping reads
+ * `{ cancelled: true }` from the webhook response and routes through the
+ * `__cancel_check_*` IF node's true branch.
  */
 export const WEBHOOK_EVENT_TYPES = [
   'workflow.started',
   'workflow.completed',
   'workflow.failed',
+  'workflow.cancelled',
   'step.started',
   'step.completed',
 ] as const satisfies ReadonlyArray<N8nWebhookEventType>;

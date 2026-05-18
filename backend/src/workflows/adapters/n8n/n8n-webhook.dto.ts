@@ -28,6 +28,7 @@ export class N8nWebhookEventDto {
       'workflow.started',
       'workflow.completed',
       'workflow.failed',
+      'workflow.cancelled',
       'step.started',
       'step.completed',
     ],
@@ -71,4 +72,13 @@ export class N8nWebhookResponseDto {
     example: false,
   })
   deduped?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Phase 2.5a cooperative-cancel signal. True iff `workflow_runs.status` is `cancelled`. ' +
+      'The compiler-injected `__pre_*` ping reads this and routes the next step through the ' +
+      '`__cancel_check_*` IF node to `__end_cancelled` instead of the canonical step.',
+    example: false,
+  })
+  cancelled?: boolean;
 }

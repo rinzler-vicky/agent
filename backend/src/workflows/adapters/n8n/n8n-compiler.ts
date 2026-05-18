@@ -53,6 +53,9 @@ const POST_DX = 80;
 const TRIGGER_NAME = '__trigger';
 const START_PING = '__start_ping';
 const END_PING = '__end_ping';
+const END_CANCELLED = '__end_cancelled';
+const CANCEL_CHECK_PREFIX = '__cancel_check_';
+const CHECK_DX = -40; // sits between __pre_<id> (PRE_DX = -80) and the canonical node (0)
 
 /**
  * Canonical output port → n8n output index for multi-output node types.
@@ -141,6 +144,7 @@ export function compileToN8n(
     const baseX = (idx + 2) * X_OFFSET;
     const preName = `__pre_${canonicalId}`;
     const postName = `__post_${canonicalId}`;
+    const checkName = `${CANCEL_CHECK_PREFIX}${canonicalId}`;
     const node = compiled.nodes[canonicalId];
 
     nodes.push(
@@ -150,8 +154,18 @@ export function compileToN8n(
         triggerSource: 'manual',
       }),
     );
+
+    // Cooperative cancel: the pre-ping returns { cancelled: boolean } from
+    // the webhook handler (a single SELECT against workflow_runs.status).
+    // The IF routes the true branch to the shared __end_cancelled sink and
+    // the false branch to the actual canonical node. n8n IF v2 output
+    // index 0 = true, 1 = false (matches PORT_INDEX.branch).
+    nodes.push(cancelCheckNode(checkName, baseX + CHECK_DX, 0));
+    addConnection(connections, preName, checkName);
+    addConnection(connections, checkName, END_CANCELLED, 'main', 0);
+    addConnection(connections, checkName, canonicalId, 'main', 1);
+
     nodes.push(canonicalToN8nNode(node, baseX, 0, opts));
-    addConnection(connections, preName, canonicalId);
 
     if (hasPostPing(node.type)) {
       nodes.push(
@@ -164,6 +178,16 @@ export function compileToN8n(
       addConnection(connections, canonicalId, postName);
     }
   }
+
+  // Single sink for cooperative cancel. Emits one workflow.cancelled event
+  // per run (only the first IF that resolves to true reaches this sink;
+  // subsequent steps never run because their pre-pings are not invoked).
+  nodes.push(
+    pingNode(END_CANCELLED, (functionalIds.length + 2) * X_OFFSET, 120, opts, {
+      event: 'workflow.cancelled',
+      triggerSource: 'manual',
+    }),
+  );
 
   // Drive forward connections from canonical edges (port-aware).
   for (const edge of compiled.edges) {
@@ -425,6 +449,40 @@ function pingNode(
       options: {
         retry: { retries: 2 },
         response: { response: { neverError: true } },
+      },
+    },
+  };
+}
+
+/**
+ * Cooperative-cancel IF node. Reads `$json.cancelled` from the preceding
+ * pre-ping's response (the webhook controller sets it from
+ * `workflow_runs.status='cancelled'`). Output 0 = true → __end_cancelled;
+ * output 1 = false → the canonical step.
+ *
+ * Uses the n8n IF v2 condition schema. The single boolean condition with
+ * `operator.operation='true'` and `singleValue=true` evaluates the leftValue
+ * for truthiness. The `id` is fixed (load-bearing for determinism: omitted
+ * IDs make n8n generate random ones).
+ */
+function cancelCheckNode(name: string, x: number, y: number): N8nNode {
+  return {
+    name,
+    type: IF_NODE,
+    typeVersion: IF_VERSION,
+    position: [x, y],
+    parameters: {
+      conditions: {
+        options: { caseSensitive: true, leftValue: '', typeValidation: 'loose' },
+        conditions: [
+          {
+            id: 'cancel-check',
+            leftValue: '={{ $json.cancelled === true }}',
+            rightValue: '',
+            operator: { type: 'boolean', operation: 'true', singleValue: true },
+          },
+        ],
+        combinator: 'and',
       },
     },
   };
