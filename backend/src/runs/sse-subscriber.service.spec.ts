@@ -185,6 +185,70 @@ describe('SseSubscriberService', () => {
       expect(collected.map((e) => e.id)).toEqual(['1', '2', '3', '4', '5', '10']);
     });
 
+    it('serializes per-run fan-out so two back-to-back notifications emit in NOTIFY arrival order even when the second fetch resolves first (regression: Copilot review)', async () => {
+      // Pre-fix race: onNotification fired fanOut without awaiting; two
+      // concurrent fetches could resolve out of order, the higher seq would
+      // win the watermark, the lower seq would be silently dropped.
+      // Fix: per-run promise chain serializes fanOut for the same run.
+      let resolveSlow: (rows: any) => void = () => {};
+      const slowPromise = new Promise<any>((res) => {
+        resolveSlow = res;
+      });
+
+      const client: MockClient = {
+        query: jest.fn().mockImplementation((sql: string, params?: any[]) => {
+          if (sql.startsWith('BEGIN') || sql.startsWith('SELECT set_config') || sql.startsWith('COMMIT') || sql.startsWith('ROLLBACK')) {
+            return Promise.resolve({ rows: [] });
+          }
+          if (sql.includes('FROM run_events WHERE id')) {
+            // Slow fetch for the seq=5 event id
+            if (params?.[0] === 'evt-5') return slowPromise.then((r) => ({ rows: r }));
+            // Fast fetch for the seq=6 event id
+            if (params?.[0] === 'evt-6') return Promise.resolve({
+              rows: [{ sequence: 6, event_type: 'step.completed', event_data: { v: 6 }, occurred_at: 't6' }],
+            });
+          }
+          return Promise.resolve({ rows: [] });
+        }),
+        release: jest.fn(),
+      };
+      const pool: MockPool = { connect: jest.fn().mockResolvedValue(client), client };
+      const svc = await buildService(pool);
+
+      // Live path only — backfill returns empty (the mock has no rows
+      // configured for the backfill SELECT against `WHERE sequence > $2`).
+      const obs$ = svc.subscribe(RUN, TENANT, 0);
+      const collected: MessageEvent[] = [];
+      const sub = obs$.subscribe((e) => collected.push(e));
+      // Let backfill txn drain so `backfilling` flips to false.
+      await flush(); await flush(); await flush();
+
+      // Fire seq=5 FIRST (slow fetch), then seq=6 (fast fetch).
+      const fire = (seq: number, eid: string) =>
+        (svc as unknown as { onNotification: (m: any) => void }).onNotification({
+          channel: 'run_events',
+          payload: JSON.stringify({
+            run_id: RUN, tenant_id: TENANT, sequence: seq,
+            event_type: 'step.started', step_run_id: null, event_id: eid,
+          }),
+        });
+      fire(5, 'evt-5');
+      fire(6, 'evt-6');
+
+      // seq=6's fetch could resolve immediately; let microtasks run.
+      await flush(); await flush();
+      // With the per-run chain, seq=6's fanOut hasn't even started — it's
+      // chained behind seq=5's slow fetch. Resolve seq=5 now.
+      resolveSlow([{ sequence: 5, event_type: 'step.started', event_data: { v: 5 }, occurred_at: 't5' }]);
+      await flush(); await flush(); await flush();
+
+      sub.unsubscribe();
+
+      // Must arrive in NOTIFY arrival order: seq=5 first, then seq=6.
+      // Without the chain, this would be ['6'] only.
+      expect(collected.map((e) => e.id)).toEqual(['5', '6']);
+    });
+
     it('emits live notifications whose sequence is greater than the last sent', async () => {
       const pool = makeMockPool([
         { rows: [] }, // empty backfill

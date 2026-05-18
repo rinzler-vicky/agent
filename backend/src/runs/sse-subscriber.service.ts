@@ -59,6 +59,15 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
   private readonly subscribers = new Map<string, Set<RunSubscription>>();
   /** In-process bus used by FailureHookService so we don't open a 2nd LISTEN client. */
   readonly notifications = new EventEmitter();
+  /**
+   * Per-run promise chain. Two NOTIFYs arriving back-to-back run their
+   * `fetchEventRow` round-trips in parallel; if the higher-sequence fetch
+   * resolves first it advances `lastSentSequence` and the lower-sequence
+   * event is silently dropped by the watermark check. Chaining each
+   * fan-out off the previous settle keeps row order at the cost of one
+   * round-trip's latency per notification per run (Copilot review PR #65).
+   */
+  private readonly fanoutTails = new Map<string, Promise<void>>();
   private client: Client | null = null;
   private readonly destroy$ = new Subject<void>();
   private reconnectAttempts = 0;
@@ -177,7 +186,23 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
 
     const subs = this.subscribers.get(payload.run_id);
     if (!subs || subs.size === 0) return;
-    void this.fanOut(payload, subs);
+
+    // Serialize per-run fan-out: chain the new task off the previous tail
+    // so two NOTIFYs arriving back-to-back can't interleave their
+    // `fetchEventRow` and silently drop the lower-sequence event. The
+    // chain is keyed per-run so a slow fetch on one run doesn't stall
+    // other runs.
+    const runId = payload.run_id;
+    const prev = this.fanoutTails.get(runId) ?? Promise.resolve();
+    const next = prev.then(() => this.fanOut(payload, subs));
+    this.fanoutTails.set(runId, next);
+    void next.finally(() => {
+      // Drop the tail when it's the current one — otherwise newer
+      // notifications have already extended the chain.
+      if (this.fanoutTails.get(runId) === next) {
+        this.fanoutTails.delete(runId);
+      }
+    });
   }
 
   private async fanOut(payload: NotifyPayload, subs: Set<RunSubscription>): Promise<void> {
