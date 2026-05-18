@@ -4,14 +4,15 @@ name: PR Preview Environment
 # Blueprint feature. This workflow handles the pieces Blueprint cannot own:
 #   - Provisioning a per-PR Neon database branch and wiring its connection
 #     string into the Render backend preview.
-#   - Phase 2.5b: paths-filter-gated wiring of the single-container n8n
-#     preview service (`agent-n8n` in render.yaml; n8n runs in default
-#     single-process mode — no worker, no Redis). When the PR doesn't touch
-#     workflow/migration paths, the auto-spawned n8n preview service is
-#     DELETEd so the cost is only paid when needed.
 #   - Recording the resulting preview environment in the `preview_environments`
 #     table (migration 014) so backend services can correlate runs with the
 #     preview that hosted them.
+#   - Smoke-testing the preview when a PR touches migration/workflow paths
+#     (paths-filter gate retained from the original Phase 2.5b design).
+#
+# Phase 2.5b note: the per-PR n8n preview surface (Blueprint-spawned
+# agent-n8n + workflow wiring) was reverted. See render.yaml and
+# .agentic/STATE.md for context.
 
 on:
   pull_request:
@@ -31,9 +32,8 @@ jobs:
     timeout-minutes: 25
     if: github.event.pull_request.draft == false && github.event.action != 'closed'
     outputs:
-      n8n_needed: ${{ steps.filter.outputs.n8n }}
+      migration_or_workflow_changed: ${{ steps.filter.outputs.n8n }}
       preview_url: ${{ steps.preview.outputs.url }}
-      n8n_url: ${{ steps.n8n.outputs.url }}
       neon_db_url: ${{ steps.neon.outputs.db_url }}
 
     steps:
@@ -297,199 +297,12 @@ jobs:
           echo "Preview API did not become ready in time."
           exit 1
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Phase 2.5b — n8n preview handling (single-container `agent-n8n`)
-      # ─────────────────────────────────────────────────────────────────────
-      # When paths-filter matches: wire the auto-spawned n8n service to the
-      # per-PR Neon branch + post the n8n URL.
-      # When paths-filter does NOT match: delete the auto-spawned n8n service
-      # to avoid paying for compute we won't use. Render auto-spawned it via
-      # render.yaml's `previews.generation: automatic` — we tear it down via
-      # `DELETE /v1/services/{id}` (verified endpoint).
-      #
-      # Service discovery follows the same parent-id + name-suffix match used
-      # for the backend service. We look for a single service whose name
-      # starts with `agent-n8n` (default single-process mode; no worker, no
-      # Redis — see render.yaml comments).
-
-      - name: Discover n8n preview service
-        id: n8n_discover
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          OWNER_ID: ${{ steps.render.outputs.owner_id }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-          N8N_NEEDED: ${{ steps.filter.outputs.n8n }}
-        run: |
-          set -euo pipefail
-          RENDER_API_BASE='https://api.render.com/v1'
-          # Render's GET /v1/services caps `limit` at 100 (verified against
-          # api-docs.render.com/reference/list-services).
-          SERVICES="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")"
-
-          # Two-pass on the single listing:
-          # 1) PARENT: any agent-n8n service (main branch). If absent, the
-          #    Blueprint hasn't been re-adopted to include agent-n8n yet —
-          #    no amount of polling will conjure a preview. Fast-fail with
-          #    operator guidance instead.
-          # 2) PREVIEW: the per-PR agent-n8n preview. If parent exists but
-          #    preview doesn't, Blueprint is mid-spawn — retry briefly.
-          PARENT_EXISTS=$(echo "${SERVICES}" | jq -r \
-            '[.[] | .service // .
-              | select((.name // "" | ascii_downcase) | startswith("agent-n8n"))
-              | select((.serviceDetails.parentServer.id // null) == null)
-              | .id
-            ] | length')
-
-          match_preview() {
-            echo "${SERVICES}" | jq -r \
-              --arg branch "${PR_BRANCH}" \
-              --arg prSuffix "-pr-${PR_NUMBER}" \
-              '[.[] | .service // .
-                | select((.name // "" | ascii_downcase) | startswith("agent-n8n"))
-                | select((.serviceDetails.parentServer.id // "") != "")
-                | select(((.branch // "") == $branch) or ((.name // "" | ascii_downcase) | endswith($prSuffix)))
-                | .id // empty
-              ] | first // empty'
-          }
-
-          N8N_ID="$(match_preview)"
-
-          if [ -z "${N8N_ID}" ] && [ "${N8N_NEEDED}" = "true" ] && [ "${PARENT_EXISTS}" != "0" ]; then
-            # Parent service exists → Blueprint is adopted; the preview is
-            # racing PR open. Two more brief retries (10s, 20s) and refetch.
-            for backoff in 10 20; do
-              echo "n8n preview not yet visible; parent service exists — retrying in ${backoff}s..."
-              sleep "${backoff}"
-              SERVICES="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
-                "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")"
-              N8N_ID="$(match_preview)"
-              [ -n "${N8N_ID}" ] && break
-            done
-          fi
-
-          echo "n8n_id=${N8N_ID}" >> "$GITHUB_OUTPUT"
-          echo "parent_exists=${PARENT_EXISTS}" >> "$GITHUB_OUTPUT"
-
-          if [ -n "${N8N_ID}" ]; then
-            echo "Discovered n8n preview service: ${N8N_ID}"
-          elif [ "${PARENT_EXISTS}" = "0" ]; then
-            echo "No agent-n8n service on the account at all — Blueprint hasn't been re-adopted for the new service block."
-          else
-            echo "agent-n8n parent exists but no preview matched after 3 attempts (~30s)."
-          fi
-
-      - name: Tear down n8n preview when paths-filter is false
-        if: steps.filter.outputs.n8n != 'true'
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          N8N_ID: ${{ steps.n8n_discover.outputs.n8n_id }}
-        run: |
-          set -euo pipefail
-          [ -z "${N8N_ID}" ] && exit 0
-          echo "Deleting n8n preview service ${N8N_ID} (PR doesn't touch workflow/migration paths)"
-          curl -fsSL -X DELETE \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            "https://api.render.com/v1/services/${N8N_ID}" || \
-            echo "::warning::DELETE failed for ${N8N_ID}; Render may still tear down on PR close"
-
-      - name: Wire n8n preview service to Neon branch
-        id: n8n
-        if: steps.filter.outputs.n8n == 'true'
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          N8N_ID: ${{ steps.n8n_discover.outputs.n8n_id }}
-          PARENT_EXISTS: ${{ steps.n8n_discover.outputs.parent_exists }}
-          NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
-        run: |
-          set -euo pipefail
-          RENDER_API_BASE='https://api.render.com/v1'
-
-          if [ -z "${N8N_ID}" ]; then
-            if [ "${PARENT_EXISTS}" = "0" ]; then
-              echo "::error::agent-n8n service not present on the Render account — Blueprint has not been re-adopted to include it."
-              echo ""
-              echo "render.yaml declares agent-n8n, but Render's Blueprint sync still only knows about the old service set."
-              echo ""
-              echo "Fix (one-time, manual):"
-              echo "  1. Render dashboard > Blueprints > select this repo's Blueprint."
-              echo "  2. Click Sync so Render reads the updated render.yaml."
-              echo "  3. Provide values for any prompted sync:false env vars (e.g. N8N_ENCRYPTION_KEY)."
-              echo "  4. Re-run this workflow on the PR."
-            else
-              echo "::error::agent-n8n parent exists but no preview spawned for this PR after 3 discovery attempts (~30s)."
-              echo "Check the Blueprint event log in Render for the most recent PR — likely a spawn error (env var missing, image pull failure)."
-            fi
-            echo ""
-            echo "Full setup runbook: docs/PR_PREVIEWS.md §First-time setup / §n8n preview"
-            exit 1
-          fi
-
-          # Parse Neon URL → host/port/database/user/password.
-          # Expected format: postgres://USER:PASS@HOST:PORT/DB?...
-          NO_SCHEME="${NEON_DB_URL#postgres://}"
-          NO_SCHEME="${NO_SCHEME#postgresql://}"
-          USERPASS="${NO_SCHEME%%@*}"
-          HOSTPORTDB="${NO_SCHEME#*@}"
-          DB_USER="${USERPASS%%:*}"
-          DB_PASS="${USERPASS#*:}"
-          HOSTPORT="${HOSTPORTDB%%/*}"
-          DB_HOST="${HOSTPORT%%:*}"
-          DB_PORT="${HOSTPORT#*:}"
-          [ "${DB_PORT}" = "${HOSTPORT}" ] && DB_PORT=5432
-          DB_NAME_QS="${HOSTPORTDB#*/}"
-          DB_NAME="${DB_NAME_QS%%\?*}"
-
-          # Render PUT replaces the full env-var set per service — fetch first,
-          # override the DB_POSTGRESDB_* keys, PUT the merged list.
-          CURRENT="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            "${RENDER_API_BASE}/services/${N8N_ID}/env-vars")"
-          UPDATED="$(echo "${CURRENT}" | jq \
-            --arg host "${DB_HOST}" \
-            --arg port "${DB_PORT}" \
-            --arg db "${DB_NAME}" \
-            --arg user "${DB_USER}" \
-            --arg pass "${DB_PASS}" \
-            '
-              [.[] | {key: .envVar.key, value: .envVar.value}]
-              | map(select(.key | test("^DB_POSTGRESDB_(HOST|PORT|DATABASE|USER|PASSWORD)$") | not))
-              + [
-                  {key: "DB_POSTGRESDB_HOST", value: $host},
-                  {key: "DB_POSTGRESDB_PORT", value: $port},
-                  {key: "DB_POSTGRESDB_DATABASE", value: $db},
-                  {key: "DB_POSTGRESDB_USER", value: $user},
-                  {key: "DB_POSTGRESDB_PASSWORD", value: $pass}
-                ]
-            ')"
-          curl -fsSL -X PUT \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data "${UPDATED}" \
-            "${RENDER_API_BASE}/services/${N8N_ID}/env-vars" > /dev/null
-          curl -fsSL -X POST \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data '{"clearCache":"do_not_clear"}' \
-            "${RENDER_API_BASE}/services/${N8N_ID}/deploys" > /dev/null
-
-          # Ensure the n8n schema exists on the per-PR Neon branch before
-          # n8n boots. n8n's TypeORM migrations will auto-create tables under
-          # `n8n` schema. Idempotent — safe to re-run on workflow retry.
-          psql "${NEON_DB_URL}" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS n8n;"
-
-          # Resolve n8n URL.
-          N8N_URL=""
-          for attempt in $(seq 1 30); do
-            N8N_URL=$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
-              "${RENDER_API_BASE}/services/${N8N_ID}" | jq -r '.serviceDetails.url // empty')
-            [ -n "${N8N_URL}" ] && break
-            echo "n8n URL not yet resolved (attempt ${attempt}/30)..."
-            sleep 10
-          done
-
-          echo "url=${N8N_URL}" >> "$GITHUB_OUTPUT"
-          echo "n8n preview URL: ${N8N_URL}"
+      # Phase 2.5b note: the n8n preview surface (Discover/Wire/Teardown
+      # steps for `agent-n8n`) was reverted. Render Blueprint preview-spawn
+      # for `runtime: image` services proved unreliable in practice — see
+      # .agentic/STATE.md. The paths-filter `n8n` output is retained as a
+      # gate for the smoke-test job in case future migration/workflow PRs
+      # need different smoke-test coverage.
 
       - name: Record preview environment in DB
         env:
@@ -497,11 +310,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BACKEND_SERVICE_ID: ${{ steps.render.outputs.preview_id }}
           PREVIEW_URL: ${{ steps.preview.outputs.url }}
-          N8N_ID: ${{ steps.n8n_discover.outputs.n8n_id }}
-          N8N_URL: ${{ steps.n8n.outputs.url }}
           NEON_BRANCH: preview/pr-${{ github.event.pull_request.number }}
           NEON_EXPIRES_AT: ${{ steps.neon_expiry.outputs.expires_at }}
-          N8N_NEEDED: ${{ steps.filter.outputs.n8n }}
           TENANT_ID: ${{ vars.PR_PREVIEW_TENANT_ID }}
         run: |
           set -euo pipefail
@@ -511,31 +321,24 @@ jobs:
             exit 0
           fi
 
-          # When paths-filter is false the n8n columns are NULL (rows still
-          # carry the backend service id + URL).
-          N8N_ID_PARAM='NULL'
-          N8N_URL_PARAM='NULL'
-          if [ "${N8N_NEEDED}" = "true" ]; then
-            [ -n "${N8N_ID}" ]  && N8N_ID_PARAM="'${N8N_ID}'"
-            [ -n "${N8N_URL}" ] && N8N_URL_PARAM="'${N8N_URL}'"
-          fi
-
           # RLS: preview_environments has a tenant_isolation policy that
           # filters by current_setting('app.tenant_id'). set_config with
           # is_local=true only persists within the current transaction
           # (PG docs: functions-admin), so the INSERT must run inside an
           # explicit BEGIN/COMMIT in the same here-doc session.
+          # Note: render_n8n_service_id and n8n_url columns are left NULL —
+          # the n8n preview surface was reverted (see render.yaml comment).
           psql "${NEON_DB_URL}" -v ON_ERROR_STOP=1 <<SQL
           BEGIN;
           SELECT set_config('app.tenant_id', '${TENANT_ID}', true);
           INSERT INTO preview_environments
                 (tenant_id, pr_number, source, status,
-                 render_backend_service_id, render_n8n_service_id,
-                 neon_branch_name, preview_url, n8n_url, expires_at)
+                 render_backend_service_id,
+                 neon_branch_name, preview_url, expires_at)
               VALUES
                 ('${TENANT_ID}'::uuid, ${PR_NUMBER}, 'pr', 'ready',
-                 '${BACKEND_SERVICE_ID}', ${N8N_ID_PARAM},
-                 '${NEON_BRANCH}', '${PREVIEW_URL}', ${N8N_URL_PARAM},
+                 '${BACKEND_SERVICE_ID}',
+                 '${NEON_BRANCH}', '${PREVIEW_URL}',
                  '${NEON_EXPIRES_AT}'::timestamptz);
           COMMIT;
           SQL
@@ -584,16 +387,6 @@ jobs:
             curl ${{ steps.preview.outputs.url }}/v1/health
             ```
 
-            ${{ steps.filter.outputs.n8n == 'true' && format('### 🧩 n8n Preview
-
-            **n8n Editor:** {0}
-
-            > This PR touches workflow or migration code, so a per-PR
-            > single-container `agent-n8n` service (default single-process
-            > mode — no worker, no Redis) was provisioned alongside the
-            > backend. Both share the per-PR Neon branch (backend uses
-            > `public` schema; n8n uses `n8n` schema).', steps.n8n.outputs.url) || '' }}
-
             ### 🗄️ Neon Database Branch
 
             | | |
@@ -607,16 +400,17 @@ jobs:
             > and a unique `JWT_SECRET` generated by Render Blueprint. Both are cleaned up on PR close.
             > If schema migrations ran on this branch, see the schema-diff comment above.
 
-  # Phase 2.5b — smoke test runs only when n8n stack was provisioned. Hits
-  # the backend preview's health endpoint and verifies a preview_environments
-  # row was recorded. The smoke test deliberately does NOT exercise the
-  # agent-spawner end-to-end (that would require minting a service-account
-  # JWT against the preview's regenerated JWT_SECRET — deferred to manual QA).
+  # Phase 2.5b — smoke test runs when a PR touches migration/workflow paths.
+  # Hits the backend preview's health endpoint and verifies a
+  # preview_environments row was recorded. The smoke test deliberately does
+  # NOT exercise the agent-spawner end-to-end (that would require minting a
+  # service-account JWT against the preview's regenerated JWT_SECRET —
+  # deferred to manual QA).
   smoke-test:
     name: Smoke test PR preview
     runs-on: ubuntu-latest
     needs: build-and-deploy
-    if: needs.build-and-deploy.outputs.n8n_needed == 'true'
+    if: needs.build-and-deploy.outputs.migration_or_workflow_changed == 'true'
     timeout-minutes: 10
 
     steps:

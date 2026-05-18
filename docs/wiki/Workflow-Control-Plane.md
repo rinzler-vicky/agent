@@ -239,7 +239,7 @@ Migration 014 adds the `preview_environments` table + an `AFTER INSERT` trigger 
 4. Outside the txn: `NeonApiClient.createBranch()` → `RenderApiClient.createService({ type: 'web_service', repo, branch: main, envVars: [DATABASE_URL=neon_branch_url, …] })` → `waitForServiceUrl()`.
 5. UPDATE row to `status='ready'` with `render_backend_service_id`, `neon_branch_name`, `preview_url`. Audit `agent_preview.created`.
 
-Agent-spawned previews are **backend-only** (no n8n) — Render's `POST /v1/services` doesn't accept the `keyvalue`/`redis` type. Sufficient for compile/migration/integration verification; full n8n previews require an actual PR (the Blueprint path).
+Agent-spawned previews are **backend-only** (no n8n) — Render's `POST /v1/services` doesn't accept the `keyvalue`/`redis` type. Sufficient for compile/migration/integration verification. Note: the originally planned PR-driven n8n preview (Blueprint-spawned `agent-n8n`) was reverted in Phase 2.5b — see `docs/PR_PREVIEWS.md §Per-PR n8n previews — deferred` for context.
 
 `PreviewTtlService` (NestJS `@Cron`, every 30 minutes) sweeps `WHERE status='ready' AND source='agent_failure_recovery' AND expires_at < now()` → `DELETE /v1/services/{id}` → flip `status='expired'` → audit. Neon branches have their own `expires_at` so they auto-clean.
 
