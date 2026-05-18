@@ -227,6 +227,24 @@ Migration 013 adds an `AFTER INSERT` trigger on `run_events` that `pg_notify`s `
 
 The agent worker that drains `proposal_triggers` and calls `POST /v1/workflow-proposals` is **not** part of 2.5a — it's a separate sub-issue.
 
+### Agent-initiated previews (Phase 2.5b)
+
+Migration 014 adds the `preview_environments` table + an `AFTER INSERT` trigger on `workflow_versions` (channel `workflow_proposals`). `SseSubscriberService` now LISTENs on both `run_events` and `workflow_proposals` from the single long-lived client; the EE event name on the in-process bus matches the channel name.
+
+`AgentPreviewSpawnerService` filters notifications to `proposal_source='failure_recovery'` (the value `ProposalsController` writes for service-account-authored proposals carrying a `stepRunId`). For each qualifying notification:
+
+1. `pg_try_advisory_xact_lock(hashtext('agent_preview_spawn:' + version_id))` — multi-pod dedupe.
+2. COUNT rows for the tenant in `('pending','provisioning','ready')`; if `>= MAX_ACTIVE_AGENT_PREVIEWS_PER_TENANT`, audit `agent_preview.rate_limited` and exit.
+3. `INSERT INTO preview_environments (… 'agent_failure_recovery', 'pending', now() + 24h)` with `ON CONFLICT (workflow_version_id) WHERE workflow_version_id IS NOT NULL AND status IN ('pending','provisioning','ready') DO NOTHING` (partial unique index from migration 014).
+4. Outside the txn: `NeonApiClient.createBranch()` → `RenderApiClient.createService({ type: 'web_service', repo, branch: main, envVars: [DATABASE_URL=neon_branch_url, …] })` → `waitForServiceUrl()`.
+5. UPDATE row to `status='ready'` with `render_backend_service_id`, `neon_branch_name`, `preview_url`. Audit `agent_preview.created`.
+
+Agent-spawned previews are **backend-only** (no n8n) — Render's `POST /v1/services` doesn't accept the `keyvalue`/`redis` type. Sufficient for compile/migration/integration verification; full n8n previews require an actual PR (the Blueprint path).
+
+`PreviewTtlService` (NestJS `@Cron`, every 30 minutes) sweeps `WHERE status='ready' AND source='agent_failure_recovery' AND expires_at < now()` → `DELETE /v1/services/{id}` → flip `status='expired'` → audit. Neon branches have their own `expires_at` so they auto-clean.
+
+Kill switch: `AGENT_PREVIEW_ENABLED=false` (default). Set to `true` only after `RENDER_API_KEY` + `RENDER_OWNER_ID` are provisioned and the per-tenant concurrency cap is sized for the Render plan.
+
 ---
 
 ## See also

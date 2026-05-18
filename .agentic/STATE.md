@@ -1,13 +1,14 @@
 status: IN_PROGRESS
-current_phase: 2.5a
+current_phase: 2.5b
 active_domain: backend
 
 # AGENT STATE TRACKER
 This file serves as the hot memory. Read at the start of every execution; update before opening a Pull Request.
 
 ## Current Objective
-Phase 2.5a (#45 split — backend execution engine + SSE + cooperative cancel + failure→proposal hook) — implementation complete; PR open against `main`. 216/216 unit tests pass. Typecheck + swagger clean. The CI/branch-preview pipeline + agent-worker drain are split into follow-up sub-issues per the user's "deferred = sub-issue" rule.
+Phase 2.5b (#66 — branch-preview CI pipeline + agent-initiated previews) — implementation in progress on `claude/phase-2-5b-branch-preview-pipeline`. Adds migration 014 (`preview_environments` table + NOTIFY trigger on `workflow_versions`), `PreviewsModule` (spawner + Neon/Render clients + TTL cron), `render.yaml` n8n single-container service, and `pr-preview.yml` paths-filter + smoke-test job. Single-container n8n preview decision (2026-05-18, user direction): per-PR preview = 2 services (backend + single-process n8n), no worker/Redis — saves Render cost vs queue mode mirroring production.
 
+Phase 2.5a (#45 split) merged in PR #65.
 Phase 2.4 (#44) merged in PR #64.
 Phase 1b — pending Neon provisioning and integration test execution.
 
@@ -27,6 +28,10 @@ Phase 1b — pending Neon provisioning and integration test execution.
 * **Phase 2.5a — n8n cancel is cooperative, not REST-driven (2026-05-18)**: n8n v1.79.0's `POST /executions/:id/stop` returns 404 in self-hosted ([n8n-io/n8n#14748](https://github.com/n8n-io/n8n/issues/14748)). Mitigation: compiler injects `__cancel_check_<id>` IF after each `__pre_*` ping; webhook handler returns `{cancelled}` flag derived from `workflow_runs.status`. Backend cancel endpoint flips DB state; the very next per-step ping short-circuits to `__end_cancelled`. Race window between cancel and the next ping is acceptable; guard `workflow_runs` transitions with `WHERE status NOT IN ('cancelled','succeeded','failed')` so a stray `workflow.completed` can't overwrite cancel.
 * **Phase 2.5a — n8n trigger via `POST /api/v1/workflows/:id/run` (2026-05-18)**: Confirmed against the n8n community thread. Compiler's `MANUAL_TRIGGER` node receives `{runId, tenantId, input}` from the call body; pre-pings extract via `$('__trigger').item.json.*`. Response `executionId` is best-effort; on omission we fall back to `GET /executions?workflowId&limit=1`.
 * **Phase 2.5a — single LISTEN client, two consumers (2026-05-18)**: `SseSubscriberService` owns the only long-lived `pg.Client` for `LISTEN run_events` and re-emits payloads on an in-process `EventEmitter`. `FailureHookService` listens on that emitter rather than opening a second connection. Multi-pod idempotency: advisory lock per run id + partial unique index on `proposal_triggers` (migration 013).
+* **Phase 2.5b — single LISTEN client extended to two channels (2026-05-18)**: `SseSubscriberService` now LISTENs on both `run_events` and `workflow_proposals` (migration 014's NOTIFY trigger on `workflow_versions` insert). EE event names switched from generic `'event'` to channel-named `'run_events'` / `'workflow_proposals'` so consumers register with the channel they care about. `AgentPreviewSpawnerService` subscribes to `'workflow_proposals'` and filters `proposal_source='failure_recovery'`.
+* **Phase 2.5b — Render Blueprint preview-only services NOT supported (verified 2026-05-18)**: declared services live on main + previews. Workaround: declare `agent-n8n` with `previews.generation: automatic` and manually suspend the main-branch instance post-adoption (production n8n is still served by `infra/docker-compose.n8n.yml`). pr-preview.yml DELETEs the auto-spawned `agent-n8n` preview when paths-filter doesn't match (saves compute cost). Confirmed against `render.com/docs/blueprint-spec` + `api-docs.render.com`.
+* **Phase 2.5b — single-container n8n preview (2026-05-18, user-directed)**: per-PR preview = 2 services (backend + single-process n8n). Drops queue mode for previews (no worker, no Key Value/Redis). Trade-off: previews diverge from prod queue-mode topology, but previews verify workflow correctness not queue infrastructure performance — prod stays queue mode via `infra/docker-compose.n8n.yml`. Saves ~50% of Render preview cost vs the original 4-service stack.
+* **Phase 2.5b — agent-initiated previews are backend-only (2026-05-18)**: Render's `POST /v1/services` type enum (verified) doesn't support `keyvalue`/`redis` — those are Blueprint-only. So `AgentPreviewSpawnerService` can only spawn the backend service via Render REST API (Neon branch + 1 Render `web_service`). Sufficient for the failure-recovery loop's compile/migration/integration verification. Rate-limited via per-tenant concurrency cap (`MAX_ACTIVE_AGENT_PREVIEWS_PER_TENANT`, default 3). TTL via NestJS `@nestjs/schedule` cron (30-min cadence, 24-hour TTL). `AGENT_PREVIEW_ENABLED=false` kill switch by default.
 * **Phase 2.5a — production frontend SSE auth deferred to Phase 6 (2026-05-18)**: Native browser `EventSource` cannot send `Authorization` headers ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/EventSource)). Backend integration tests use the Node `eventsource` package which supports headers; the production frontend will need cookie-JWT or one-shot signed URLs.
 
 ## Completed Tasks

@@ -94,20 +94,57 @@ After steps 3 and 4 you should see in **Settings → Secrets and variables → A
 ## What happens on every PR
 
 1. PR is opened / pushed → `pr-preview.yml` runs.
-2. **Neon branch created**: `preview/pr-<num>` is a copy-on-write clone of the project's default branch (`production`) — full schema, extensions, and RLS policies inherited. The branch is created with an `expires_at` 14 days out as a safety net; normal PR close deletes it earlier.
-2a. **(Conditional) Schema-diff comment**: if the preview branch's schema differs from the parent, `neondatabase/schema-diff-action` posts a separate PR comment showing the diff. Silent when schemas match.
-3. **Render preview service created** (automatically by Render Blueprint, not by the workflow): a separate service named `agent-pr-<num>` is created with its own auto-generated `JWT_SECRET` and inheriting all `agent-shared` group values.
-4. **Workflow PUTs `DATABASE_URL`** on the preview service (the Neon branch's connection string) and triggers a fresh deploy.
-5. **Workflow waits** for `<preview-url>/v1/health` to return 200.
-6. **Workflow comments** on the PR with the preview URL and Neon branch name.
+2. **`dorny/paths-filter@v3`** decides whether this PR needs the n8n preview by checking changes under `backend/db/migrations/**`, `backend/src/workflows/**`, `infra/docker-compose.n8n.yml`, or `render.yaml`.
+3. **Neon branch created**: `preview/pr-<num>` is a copy-on-write clone of the project's default branch (`production`) — full schema, extensions, and RLS policies inherited. The branch is created with an `expires_at` 14 days out as a safety net; normal PR close deletes it earlier.
+3a. **(Conditional) Schema-diff comment**: if the preview branch's schema differs from the parent, `neondatabase/schema-diff-action` posts a separate PR comment showing the diff. Silent when schemas match.
+4. **Render preview services created** (automatically by Render Blueprint, not by the workflow): `agent-pr-<num>` (backend) and `agent-n8n-pr-<num>` (n8n) are both auto-spawned. The workflow then:
+   - **Backend**: PUTs `DATABASE_URL`, triggers redeploy.
+   - **If paths-filter is true**: parses the Neon URL into `DB_POSTGRESDB_*` env vars, PUTs them on `agent-n8n`, `psql`'s `CREATE SCHEMA IF NOT EXISTS n8n`, triggers redeploy, resolves the n8n URL.
+   - **If paths-filter is false**: `DELETE`s `agent-n8n-pr-<num>` so we don't pay for unused n8n compute.
+5. **Workflow records the preview in `preview_environments`** (migration 014) via `psql` against the Neon branch URL.
+6. **Workflow waits** for `<preview-url>/v1/health` to return 200.
+7. **Workflow comments** on the PR with both URLs (n8n URL only when paths-filter matched).
+8. **`smoke-test` job** runs only when paths-filter matched — probes backend health + verifies the `preview_environments` row was recorded.
 
 The first preview deploy may show as "Failed" in Render's deploy log because it boots before the workflow sets `DATABASE_URL`. The next deploy succeeds. PR authors see only the comment on the successful deploy.
 
 ## What happens on PR close
 
-1. **Neon branch deleted**: `preview/pr-<num>` is removed (`neondatabase/delete-branch-action`).
-2. **Render preview service deleted**: handled by Render automatically when the PR closes.
-3. **GitHub deployment marked inactive**, environment deleted, teardown comment posted.
+1. **`preview_environments` row** flipped to `status='torn_down'`, `torn_down_at = now()` (against the prod DB; the Neon branch is about to be deleted).
+2. **Neon branch deleted**: `preview/pr-<num>` is removed (`neondatabase/delete-branch-action`).
+3. **Render preview services deleted** (backend + n8n if it exists): handled by Render automatically when the PR closes.
+4. **GitHub deployment marked inactive**, environment deleted, teardown comment posted.
+
+## n8n preview (Phase 2.5b)
+
+A single-container `agent-n8n` service is declared in `render.yaml` alongside the backend. It runs in n8n's default single-process mode — no separate worker, no Redis. Persistence still uses the per-PR Neon branch under the `n8n` schema (`DB_POSTGRESDB_SCHEMA=n8n`), so workflow state survives n8n restarts within the preview's lifetime.
+
+**Why single-process for previews and queue-mode for prod?** Previews verify that workflow JSON compiles and executes end-to-end. They don't validate the queue infrastructure — production does that. Single-process previews save 2 Render services per PR (no worker, no Key Value) at the cost of a code path that prod exercises continuously.
+
+**Paths-filter gates n8n spawning.** Without paths-filter we'd pay Render for an idle n8n on every PR. The filter triggers n8n only for PRs that touch `backend/db/migrations/**`, `backend/src/workflows/**`, `infra/docker-compose.n8n.yml`, or `render.yaml`. Other PRs DELETE the auto-spawned `agent-n8n` service via Render API.
+
+### Post-Blueprint-adoption: suspend `agent-n8n` on main
+
+Render Blueprint has no "preview-only services" mechanism — the `agent-n8n` service declaration creates instances on the **main branch service set as well**. Production n8n is still served by `infra/docker-compose.n8n.yml` (queue mode). To avoid paying for a duplicate main-branch n8n on Render:
+
+1. After Blueprint adoption, Render Dashboard → `agent-n8n` (the non-preview one) → **Suspend Service**.
+2. The `previews: { generation: automatic }` block still applies to preview instances, so per-PR spawns still work.
+
+This is a one-time manual step; document any future automation under a new sub-issue.
+
+## Agent-initiated previews
+
+Phase 2.5b also adds agent-spawned previews driven by `AgentPreviewSpawnerService`. When a service-account agent POSTs to `/v1/workflow-proposals` with a `stepRunId` (yielding `proposal_source='failure_recovery'`), an in-process LISTEN/NOTIFY pipeline triggers the spawner:
+
+1. Per-tenant concurrency cap (`MAX_ACTIVE_AGENT_PREVIEWS_PER_TENANT`, default 3) — rejects new spawns when at cap; audits `agent_preview.rate_limited`.
+2. Advisory lock per `workflow_version_id` — dedupes across multi-pod NOTIFY delivery.
+3. INSERTs `preview_environments` row (`source='agent_failure_recovery'`, `status='pending'`, 24h TTL).
+4. Calls Neon `createBranch` → Render `createService` (backend only — agent-spawned previews don't include n8n; Render's `POST /v1/services` doesn't support the `keyvalue` type used in Blueprint).
+5. Polls for the service URL, UPDATEs `status='ready'`, audits `agent_preview.created`.
+
+`PreviewTtlService` (NestJS `@Cron`, every 30 minutes) sweeps expired rows: deletes the Render service, flips `status='expired'`, audits `agent_preview.expired`. Neon branches have their own `expires_at` so they auto-clean.
+
+**Kill switch:** `AGENT_PREVIEW_ENABLED=false` disables the spawner entirely. Default is `false` until ops sizes the per-tenant cap and provisions `RENDER_API_KEY` + `RENDER_OWNER_ID`.
 
 ## Local testing
 
