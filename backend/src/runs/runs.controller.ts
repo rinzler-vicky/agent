@@ -4,12 +4,15 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
+  MessageEvent,
   Param,
   ParseUUIDPipe,
   Post,
   Req,
+  Sse,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -17,13 +20,16 @@ import {
   ApiCreatedResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiProduces,
   ApiTags,
 } from '@nestjs/swagger';
+import { Observable } from 'rxjs';
 import { Request } from 'express';
 import { JwtAuthGuard } from '@/auth/jwt-auth.guard';
 import { RolesGuard } from '@/auth/roles.guard';
 import { Roles } from '@/auth/roles.decorator';
 import { RunsService, WorkflowRunWithRollup } from './runs.service';
+import { SseSubscriberService } from './sse-subscriber.service';
 import { CreateWorkflowRunDto, WorkflowRun } from './dto/workflow-run.dto';
 
 interface AuthedRequest extends Request {
@@ -47,7 +53,10 @@ const requireTenant = (req: AuthedRequest): { tenantId: string; actorId: string;
 @Controller({ path: 'workflow-runs', version: '1' })
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class RunsController {
-  constructor(private readonly runs: RunsService) {}
+  constructor(
+    private readonly runs: RunsService,
+    private readonly sse: SseSubscriberService,
+  ) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -77,6 +86,34 @@ export class RunsController {
   ): Promise<WorkflowRunWithRollup> {
     const { tenantId } = requireTenant(req);
     return this.runs.getWithRollup(id, tenantId);
+  }
+
+  @Sse(':id/events')
+  @ApiOperation({
+    summary: 'Subscribe to run events as Server-Sent Events',
+    description:
+      'Returns an SSE stream of `run_events` for the run, in monotonic sequence order. ' +
+      'Pass `Last-Event-ID` (an integer) on reconnect to resume after the last sequence ' +
+      'you received — the server backfills first, then switches to live LISTEN/NOTIFY ' +
+      'pushes. Heartbeat pings keep idle connections alive. RLS-scoped: the stream ' +
+      'returns nothing if the run is not visible to the caller tenant.',
+  })
+  @ApiProduces('text/event-stream')
+  async events(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Req() req: AuthedRequest,
+    @Headers('last-event-id') lastEventId?: string,
+  ): Promise<Observable<MessageEvent>> {
+    const { tenantId } = requireTenant(req);
+    // 404 before opening the long-lived stream; cleaner than streaming an
+    // empty Observable when the caller can't see this run.
+    await this.runs.getWithRollup(id, tenantId);
+    const parsedLastEventId = lastEventId ? Number(lastEventId) : undefined;
+    return this.sse.subscribe(
+      id,
+      tenantId,
+      Number.isFinite(parsedLastEventId) ? parsedLastEventId : undefined,
+    );
   }
 
   @Post(':id/cancel')
