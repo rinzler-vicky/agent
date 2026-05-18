@@ -12,9 +12,25 @@
 #      a per-PR preview service (see .github/workflows/pr-preview.yml for the
 #      Neon branch wiring that completes preview provisioning).
 #
+# Phase 2.5b additions (issue #66): a SINGLE `agent-n8n` service per PR
+# preview, running n8n in single-process mode (no separate worker, no Redis).
+# Each PR preview = 2 containers total: `agent` (backend) + `agent-n8n`.
+# Production n8n stays queue mode via `infra/docker-compose.n8n.yml` — the
+# preview's single-process mode is acceptable for throwaway smoke testing.
+# `pr-preview.yml` paths-filter conditionally wires (or deletes when the PR
+# doesn't touch workflow/migration paths) the n8n service.
+#
+# IMPORTANT post-adoption step: Render Blueprint has no "preview-only
+# services" mechanism (verified against blueprint-spec, May 2026). The
+# `agent-n8n` service WILL be created on the main branch as well. After
+# Blueprint adoption, suspend the main-branch `agent-n8n` via the Render
+# dashboard (or `PUT /v1/services/{id}/suspend`) — production n8n is still
+# served by the docker-compose stack. See docs/PR_PREVIEWS.md for the runbook.
+#
 # References:
 #   - https://render.com/docs/blueprint-spec
 #   - https://render.com/docs/preview-environments
+#   - https://api-docs.render.com/reference/suspend-service
 
 previews:
   expireAfterDays: 7
@@ -34,6 +50,7 @@ envVarGroups:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+
 
 services:
   - type: web
@@ -70,3 +87,56 @@ services:
       - key: DATABASE_URL
         sync: false
       - fromGroup: agent-shared
+
+  # Phase 2.5b — single-container n8n preview. Auto-spawns on every PR;
+  # pr-preview.yml paths-filter conditionally wires (or deletes when not
+  # needed) this service. EXECUTIONS_MODE is unset, so n8n runs in its
+  # default single-process mode — no worker, no Redis. Persistence still
+  # uses the per-PR Neon branch's `n8n` schema so workflow state survives
+  # n8n restarts within the preview's lifetime.
+  - type: web
+    name: agent-n8n
+    runtime: image
+    plan: starter
+    region: oregon
+    image:
+      url: docker.n8n.io/n8nio/n8n:1.79.0
+    healthCheckPath: /healthz
+    autoDeploy: false
+    branch: main
+    previews:
+      generation: automatic
+    envVars:
+      # N8N_ENCRYPTION_KEY: required so credentials persist across restarts.
+      # generateValue mints a unique 256-bit value per preview.
+      - key: N8N_ENCRYPTION_KEY
+        generateValue: true
+      # Postgres backend for n8n metadata. DB_POSTGRESDB_* are set per-PR
+      # by pr-preview.yml after parsing the per-PR Neon branch URL. The
+      # backend uses `public` schema; n8n is isolated in `n8n` schema.
+      - key: DB_TYPE
+        value: postgresdb
+      - key: DB_POSTGRESDB_SCHEMA
+        value: n8n
+      - key: DB_POSTGRESDB_HOST
+        sync: false
+      - key: DB_POSTGRESDB_PORT
+        sync: false
+      - key: DB_POSTGRESDB_DATABASE
+        sync: false
+      - key: DB_POSTGRESDB_USER
+        sync: false
+      - key: DB_POSTGRESDB_PASSWORD
+        sync: false
+      - key: N8N_BASIC_AUTH_ACTIVE
+        value: 'true'
+      - key: N8N_BASIC_AUTH_USER
+        value: admin
+      - key: N8N_BASIC_AUTH_PASSWORD
+        generateValue: true
+      - key: GENERIC_TIMEZONE
+        value: UTC
+      - key: N8N_DIAGNOSTICS_ENABLED
+        value: 'false'
+      - key: N8N_VERSION_NOTIFICATIONS_ENABLED
+        value: 'false'

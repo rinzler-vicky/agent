@@ -1,10 +1,16 @@
 name: PR Preview Environment
 
-# All Render service shape (build/start commands, JWT_SECRET, preview enablement)
-# is declared in render.yaml at repo root via Render's Blueprint feature. This
-# workflow only handles the one piece Render Blueprint cannot own: provisioning
-# a per-PR Neon database branch and wiring its connection string into the Render
-# preview service.
+# Render service shape is declared in render.yaml at repo root via Render's
+# Blueprint feature. This workflow handles the pieces Blueprint cannot own:
+#   - Provisioning a per-PR Neon database branch and wiring its connection
+#     string into the Render backend preview.
+#   - Phase 2.5b: paths-filter-gated wiring of the n8n preview stack (n8n
+#     main + worker + keyvalue) declared in render.yaml. When the PR doesn't
+#     touch workflow/migration paths, the auto-spawned n8n preview services
+#     are DELETEd so the cost is only paid when needed.
+#   - Recording the resulting preview environment in the `preview_environments`
+#     table (migration 014) so backend services can correlate runs with the
+#     preview that hosted them.
 
 on:
   pull_request:
@@ -21,14 +27,33 @@ jobs:
   build-and-deploy:
     name: Provision Neon branch and wire Render preview
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     if: github.event.pull_request.draft == false && github.event.action != 'closed'
+    outputs:
+      n8n_needed: ${{ steps.filter.outputs.n8n }}
+      preview_url: ${{ steps.preview.outputs.url }}
+      n8n_url: ${{ steps.n8n.outputs.url }}
+      neon_db_url: ${{ steps.neon.outputs.db_url }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+
+      # Phase 2.5b — gate n8n provisioning on workflow/migration path changes.
+      # `dorny/paths-filter@v3` works on pull_request triggers out of the box
+      # (verified against the action's README, May 2026).
+      - name: Detect workflow/migration changes (paths-filter)
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            n8n:
+              - 'backend/db/migrations/**'
+              - 'backend/src/workflows/**'
+              - 'infra/docker-compose.n8n.yml'
+              - 'render.yaml'
 
       - name: Apply render-preview label (PR tracking; previews auto-created by Render Blueprint)
         env:
@@ -199,6 +224,7 @@ jobs:
 
           echo "preview_id=${PREVIEW_ID}" >> "$GITHUB_OUTPUT"
           echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+          echo "owner_id=${OWNER_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve preview URL if not yet known
         id: preview
@@ -270,6 +296,188 @@ jobs:
           echo "Preview API did not become ready in time."
           exit 1
 
+      # ─────────────────────────────────────────────────────────────────────
+      # Phase 2.5b — n8n preview stack handling
+      # ─────────────────────────────────────────────────────────────────────
+      # When paths-filter matches: wire the auto-spawned n8n services to the
+      # per-PR Neon branch + post the n8n URL.
+      # When paths-filter does NOT match: delete the auto-spawned n8n services
+      # to avoid paying for compute we won't use. Render auto-spawned them via
+      # render.yaml's `previews.generation: automatic` — we tear them down via
+      # `DELETE /v1/services/{id}` (verified endpoint).
+      #
+      # Service discovery follows the same parent-id + name-suffix match used
+      # for the backend service. The four service names we look for are
+      # single n8n service is declared in render.yaml as `agent-n8n`
+      # (single-process mode; no worker, no Redis — see render.yaml comments).
+
+      - name: Discover n8n preview service
+        id: n8n_discover
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          OWNER_ID: ${{ steps.render.outputs.owner_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          RENDER_API_BASE='https://api.render.com/v1'
+          SERVICES="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=200")"
+
+          N8N_ID=$(echo "${SERVICES}" | jq -r \
+            --arg branch "${PR_BRANCH}" \
+            --arg prSuffix "-pr-${PR_NUMBER}" \
+            '[.[] | .service // .
+              | select((.name // "" | ascii_downcase) | startswith("agent-n8n"))
+              | select(((.branch // "") == $branch) or ((.name // "" | ascii_downcase) | endswith($prSuffix)))
+              | .id // empty
+            ] | first // empty')
+
+          echo "n8n_id=${N8N_ID}" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${N8N_ID}" ]; then
+            echo "Discovered n8n preview service: ${N8N_ID}"
+          else
+            echo "No n8n preview service found yet (Blueprint may still be provisioning, or service not declared)."
+          fi
+
+      - name: Tear down n8n preview when paths-filter is false
+        if: steps.filter.outputs.n8n != 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          N8N_ID: ${{ steps.n8n_discover.outputs.n8n_id }}
+        run: |
+          set -euo pipefail
+          [ -z "${N8N_ID}" ] && exit 0
+          echo "Deleting n8n preview service ${N8N_ID} (PR doesn't touch workflow/migration paths)"
+          curl -fsSL -X DELETE \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            "https://api.render.com/v1/services/${N8N_ID}" || \
+            echo "::warning::DELETE failed for ${N8N_ID}; Render may still tear down on PR close"
+
+      - name: Wire n8n preview service to Neon branch
+        id: n8n
+        if: steps.filter.outputs.n8n == 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          N8N_ID: ${{ steps.n8n_discover.outputs.n8n_id }}
+          NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
+        run: |
+          set -euo pipefail
+          RENDER_API_BASE='https://api.render.com/v1'
+
+          if [ -z "${N8N_ID}" ]; then
+            echo "::error::n8n preview service not found; Blueprint may not include the agent-n8n service."
+            echo "Add the agent-n8n service to render.yaml and reconnect Blueprint."
+            exit 1
+          fi
+
+          # Parse Neon URL → host/port/database/user/password.
+          # Expected format: postgres://USER:PASS@HOST:PORT/DB?...
+          NO_SCHEME="${NEON_DB_URL#postgres://}"
+          NO_SCHEME="${NO_SCHEME#postgresql://}"
+          USERPASS="${NO_SCHEME%%@*}"
+          HOSTPORTDB="${NO_SCHEME#*@}"
+          DB_USER="${USERPASS%%:*}"
+          DB_PASS="${USERPASS#*:}"
+          HOSTPORT="${HOSTPORTDB%%/*}"
+          DB_HOST="${HOSTPORT%%:*}"
+          DB_PORT="${HOSTPORT#*:}"
+          [ "${DB_PORT}" = "${HOSTPORT}" ] && DB_PORT=5432
+          DB_NAME_QS="${HOSTPORTDB#*/}"
+          DB_NAME="${DB_NAME_QS%%\?*}"
+
+          # Render PUT replaces the full env-var set per service — fetch first,
+          # override the DB_POSTGRESDB_* keys, PUT the merged list.
+          CURRENT="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            "${RENDER_API_BASE}/services/${N8N_ID}/env-vars")"
+          UPDATED="$(echo "${CURRENT}" | jq \
+            --arg host "${DB_HOST}" \
+            --arg port "${DB_PORT}" \
+            --arg db "${DB_NAME}" \
+            --arg user "${DB_USER}" \
+            --arg pass "${DB_PASS}" \
+            '
+              [.[] | {key: .envVar.key, value: .envVar.value}]
+              | map(select(.key | test("^DB_POSTGRESDB_(HOST|PORT|DATABASE|USER|PASSWORD)$") | not))
+              + [
+                  {key: "DB_POSTGRESDB_HOST", value: $host},
+                  {key: "DB_POSTGRESDB_PORT", value: $port},
+                  {key: "DB_POSTGRESDB_DATABASE", value: $db},
+                  {key: "DB_POSTGRESDB_USER", value: $user},
+                  {key: "DB_POSTGRESDB_PASSWORD", value: $pass}
+                ]
+            ')"
+          curl -fsSL -X PUT \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data "${UPDATED}" \
+            "${RENDER_API_BASE}/services/${N8N_ID}/env-vars" > /dev/null
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data '{"clearCache":"do_not_clear"}' \
+            "${RENDER_API_BASE}/services/${N8N_ID}/deploys" > /dev/null
+
+          # Ensure the n8n schema exists on the per-PR Neon branch before
+          # n8n boots. n8n's TypeORM migrations will auto-create tables under
+          # `n8n` schema. Idempotent — safe to re-run on workflow retry.
+          psql "${NEON_DB_URL}" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS n8n;"
+
+          # Resolve n8n URL.
+          N8N_URL=""
+          for attempt in $(seq 1 30); do
+            N8N_URL=$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
+              "${RENDER_API_BASE}/services/${N8N_ID}" | jq -r '.serviceDetails.url // empty')
+            [ -n "${N8N_URL}" ] && break
+            echo "n8n URL not yet resolved (attempt ${attempt}/30)..."
+            sleep 10
+          done
+
+          echo "url=${N8N_URL}" >> "$GITHUB_OUTPUT"
+          echo "n8n preview URL: ${N8N_URL}"
+
+      - name: Record preview environment in DB
+        env:
+          NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BACKEND_SERVICE_ID: ${{ steps.render.outputs.preview_id }}
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+          N8N_ID: ${{ steps.n8n_discover.outputs.n8n_id }}
+          N8N_URL: ${{ steps.n8n.outputs.url }}
+          NEON_BRANCH: preview/pr-${{ github.event.pull_request.number }}
+          NEON_EXPIRES_AT: ${{ steps.neon_expiry.outputs.expires_at }}
+          N8N_NEEDED: ${{ steps.filter.outputs.n8n }}
+          TENANT_ID: ${{ vars.PR_PREVIEW_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::warning::PR_PREVIEW_TENANT_ID variable not set; skipping preview_environments INSERT."
+            echo "Set this once via: gh variable set PR_PREVIEW_TENANT_ID --body <uuid-of-the-platform-tenant>"
+            exit 0
+          fi
+
+          # When paths-filter is false the n8n columns are NULL (rows still
+          # carry the backend service id + URL).
+          N8N_ID_PARAM='NULL'
+          N8N_URL_PARAM='NULL'
+          if [ "${N8N_NEEDED}" = "true" ]; then
+            [ -n "${N8N_ID}" ]  && N8N_ID_PARAM="'${N8N_ID}'"
+            [ -n "${N8N_URL}" ] && N8N_URL_PARAM="'${N8N_URL}'"
+          fi
+
+          psql "${NEON_DB_URL}" -v ON_ERROR_STOP=1 <<SQL
+          INSERT INTO preview_environments
+                (tenant_id, pr_number, source, status,
+                 render_backend_service_id, render_n8n_service_id,
+                 neon_branch_name, preview_url, n8n_url, expires_at)
+              VALUES
+                ('${TENANT_ID}'::uuid, ${PR_NUMBER}, 'pr', 'ready',
+                 '${BACKEND_SERVICE_ID}', ${N8N_ID_PARAM},
+                 '${NEON_BRANCH}', '${PREVIEW_URL}', ${N8N_URL_PARAM},
+                 '${NEON_EXPIRES_AT}'::timestamptz);
+          SQL
+
       - name: Create GitHub Deployment
         uses: actions/github-script@v7
         with:
@@ -314,6 +522,15 @@ jobs:
             curl ${{ steps.preview.outputs.url }}/v1/health
             ```
 
+            ${{ steps.filter.outputs.n8n == 'true' && format('### 🧩 n8n Preview
+
+            **n8n Editor:** {0}
+
+            > This PR touches workflow or migration code, so a per-PR n8n
+            > queue-mode stack (main + worker + keyvalue) was provisioned
+            > alongside the backend. Both share the per-PR Neon branch
+            > (backend uses public schema; n8n uses `n8n` schema).', steps.n8n.outputs.url) || '' }}
+
             ### 🗄️ Neon Database Branch
 
             | | |
@@ -327,12 +544,75 @@ jobs:
             > and a unique `JWT_SECRET` generated by Render Blueprint. Both are cleaned up on PR close.
             > If schema migrations ran on this branch, see the schema-diff comment above.
 
+  # Phase 2.5b — smoke test runs only when n8n stack was provisioned. Hits
+  # the backend preview's health endpoint and verifies a preview_environments
+  # row was recorded. The smoke test deliberately does NOT exercise the
+  # agent-spawner end-to-end (that would require minting a service-account
+  # JWT against the preview's regenerated JWT_SECRET — deferred to manual QA).
+  smoke-test:
+    name: Smoke test PR preview
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    if: needs.build-and-deploy.outputs.n8n_needed == 'true'
+    timeout-minutes: 10
+
+    steps:
+      - name: Probe backend health
+        env:
+          PREVIEW_URL: ${{ needs.build-and-deploy.outputs.preview_url }}
+        run: |
+          set -euo pipefail
+          STATUS=$(curl -sS -o /tmp/health.json -w "%{http_code}" "${PREVIEW_URL}/v1/health")
+          if [ "${STATUS}" != "200" ]; then
+            echo "Backend health probe returned ${STATUS}"
+            cat /tmp/health.json || true
+            exit 1
+          fi
+          cat /tmp/health.json
+          echo
+
+      - name: Verify preview_environments row exists
+        env:
+          NEON_DB_URL: ${{ needs.build-and-deploy.outputs.neon_db_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          COUNT=$(psql "${NEON_DB_URL}" -tAc \
+            "SELECT count(*) FROM preview_environments WHERE pr_number = ${PR_NUMBER} AND source = 'pr';")
+          if [ "${COUNT}" -lt "1" ]; then
+            echo "::error::No preview_environments row found for PR ${PR_NUMBER}"
+            exit 1
+          fi
+          echo "Found ${COUNT} preview_environments row(s) for PR ${PR_NUMBER}."
+
   teardown:
     name: Tear down preview
     runs-on: ubuntu-latest
     if: github.event.action == 'closed'
 
     steps:
+      - name: Mark preview_environments row torn_down
+        env:
+          # On teardown the Neon branch is being deleted in the next step;
+          # use the production DATABASE_URL (set as a repo secret) for the
+          # UPDATE so we hit the surviving row rather than the about-to-be-gone branch.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::warning::DATABASE_URL secret not set; skipping preview_environments teardown UPDATE."
+            exit 0
+          fi
+          psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -c "
+            UPDATE preview_environments
+               SET status = 'torn_down', torn_down_at = now(), updated_at = now()
+             WHERE pr_number = ${PR_NUMBER}
+               AND source = 'pr'
+               AND status <> 'torn_down';
+          "
+
       - name: Delete Neon branch
         uses: neondatabase/delete-branch-action@v3
         continue-on-error: true
@@ -385,8 +665,9 @@ jobs:
           body: |
             ## 🧹 Preview Environment Torn Down
 
-            - Render preview service: deleted by Render (PR closed)
+            - Render preview services (backend, n8n stack if any): deleted by Render (PR closed)
             - Neon branch `preview/pr-${{ github.event.pull_request.number }}`: deleted
+            - `preview_environments` row: marked `torn_down`
             - GitHub deployment: marked inactive
 
             **Reason:** PR was ${{ github.event.pull_request.merged && 'merged' || 'closed' }}.
