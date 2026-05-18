@@ -28,6 +28,16 @@ interface RunSubscription {
   subject: Subject<MessageEvent>;
   tenantId: string;
   lastSentSequence: number; // monotonically increasing; de-dups against backfill/notify race
+  /**
+   * True while initial backfill is still running. Live notifications received
+   * during this window are queued into `pendingLive` instead of fanning out
+   * directly — otherwise a live event with sequence N can advance
+   * `lastSentSequence` past backfill rows with sequence < N, causing those
+   * backfill rows to be silently dropped by the watermark check.
+   */
+  backfilling: boolean;
+  /** Buffer for live NOTIFY-derived events that arrive during backfill. */
+  pendingLive: MessageEvent[];
 }
 
 /**
@@ -53,6 +63,7 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
   private readonly destroy$ = new Subject<void>();
   private reconnectAttempts = 0;
   private shuttingDown = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private readonly heartbeatMs: number;
   private readonly connectionString: string;
   private readonly ssl: false | { rejectUnauthorized: boolean };
@@ -82,6 +93,12 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
     this.shuttingDown = true;
     this.destroy$.next();
     this.destroy$.complete();
+    // Cancel any pending reconnect so we don't open a fresh Client during
+    // shutdown (Gemini review PR #65).
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.client) {
       try {
         await this.client.end();
@@ -134,7 +151,11 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
     this.reconnectAttempts++;
     const delayMs = Math.min(30000, 1000 * 2 ** Math.min(this.reconnectAttempts - 1, 5));
     this.logger.log(`reconnecting LISTEN client in ${delayMs}ms (attempt ${this.reconnectAttempts})`);
-    setTimeout(() => void this.connect(), delayMs);
+    // Store the handle so onModuleDestroy can clear it cleanly.
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, delayMs);
   }
 
   /**
@@ -174,6 +195,14 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
         }),
       };
       for (const s of subs) {
+        if (s.backfilling) {
+          // Queue live events arriving during backfill. Without this,
+          // advancing `lastSentSequence` here would cause backfill rows
+          // with smaller sequences to be skipped silently by the watermark
+          // check in `backfill()` — Copilot review PR #65.
+          s.pendingLive.push(event);
+          continue;
+        }
         if (row.sequence <= s.lastSentSequence) continue;
         s.subject.next(event);
         s.lastSentSequence = row.sequence;
@@ -228,6 +257,8 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
       subject,
       tenantId,
       lastSentSequence: startingSequence,
+      backfilling: true,
+      pendingLive: [],
     };
 
     // Register BEFORE backfill so a notification arriving in the window
@@ -296,9 +327,26 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
         });
         sub.lastSentSequence = row.sequence;
       }
+
+      // Phase 2.5a — flush events that were queued while backfill ran.
+      // Any pending live event with sequence <= lastSentSequence (already
+      // covered by backfill) is discarded; the rest replay in arrival order.
+      // The flag flip + flush must happen synchronously so a notification
+      // arriving here doesn't slip into pendingLive after we've already
+      // started draining.
+      sub.backfilling = false;
+      const queued = sub.pendingLive;
+      sub.pendingLive = [];
+      for (const ev of queued) {
+        const seq = Number(ev.id);
+        if (!Number.isFinite(seq) || seq <= sub.lastSentSequence) continue;
+        sub.subject.next(ev);
+        sub.lastSentSequence = seq;
+      }
     } catch (err) {
       await client.query('ROLLBACK');
       this.logger.warn(`backfill failed for run ${runId}: ${(err as Error).message}`);
+      sub.backfilling = false;
       sub.subject.error(err);
     } finally {
       client.release();

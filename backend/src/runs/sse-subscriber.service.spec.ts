@@ -139,6 +139,52 @@ describe('SseSubscriberService', () => {
       expect(collected.map((e) => e.id)).toEqual(['1', '2']);
     });
 
+    it('preserves backfill order when a live event arrives mid-backfill (regression: Copilot review)', async () => {
+      // Backfill returns seq=1..5. While backfill is in flight, a live
+      // NOTIFY at seq=10 arrives. Without buffering, the live event would
+      // advance the watermark and cause backfill rows 2..5 to be silently
+      // dropped by the `row.sequence <= lastSentSequence` check.
+      const pool = makeMockPool([
+        {
+          rows: [
+            { id: 'e1', sequence: 1, event_type: 'step.started', event_data: {}, step_run_id: null, occurred_at: 't1' },
+            { id: 'e2', sequence: 2, event_type: 'step.completed', event_data: {}, step_run_id: null, occurred_at: 't2' },
+            { id: 'e3', sequence: 3, event_type: 'step.started', event_data: {}, step_run_id: null, occurred_at: 't3' },
+            { id: 'e4', sequence: 4, event_type: 'step.completed', event_data: {}, step_run_id: null, occurred_at: 't4' },
+            { id: 'e5', sequence: 5, event_type: 'step.started', event_data: {}, step_run_id: null, occurred_at: 't5' },
+          ],
+        },
+        // fetchEventRow response for the live NOTIFY (seq=10)
+        { rows: [{ sequence: 10, event_type: 'workflow.completed', event_data: {}, occurred_at: 't10' }] },
+      ]);
+      const svc = await buildService(pool);
+      const obs$ = svc.subscribe(RUN, TENANT, 0);
+      const collected: MessageEvent[] = [];
+      const sub = obs$.subscribe((e) => collected.push(e));
+
+      // Fire the live NOTIFY immediately — before backfill's await chain
+      // resolves. The subscriber should buffer it as pendingLive.
+      (svc as unknown as { onNotification: (m: { channel: string; payload?: string }) => void }).onNotification({
+        channel: 'run_events',
+        payload: JSON.stringify({
+          run_id: RUN,
+          tenant_id: TENANT,
+          sequence: 10,
+          event_type: 'workflow.completed',
+          step_run_id: null,
+          event_id: 'e10',
+        }),
+      });
+
+      await flush();
+      await flush();
+      await flush();
+      sub.unsubscribe();
+
+      // All 5 backfill rows must arrive in order, THEN the buffered live event.
+      expect(collected.map((e) => e.id)).toEqual(['1', '2', '3', '4', '5', '10']);
+    });
+
     it('emits live notifications whose sequence is greater than the last sent', async () => {
       const pool = makeMockPool([
         { rows: [] }, // empty backfill

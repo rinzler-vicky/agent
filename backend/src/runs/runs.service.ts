@@ -32,21 +32,62 @@ export class RunsService {
 
   /**
    * Creates a workflow_runs row, asks the n8n adapter to start the execution,
-   * then stashes the provider's executionId on the run. We INSERT before the
-   * remote call so the run id is stable and the trigger payload can reference
-   * it; if the adapter call fails we ROLLBACK so no orphan run lands.
+   * then stashes the provider's executionId on the run.
+   *
+   * Ordering is load-bearing: the INSERT must be **committed** before we call
+   * the n8n adapter. n8n turns around and POSTs `__start_ping` back into our
+   * webhook controller almost immediately; those callbacks open a fresh DB
+   * connection and `SELECT FROM workflow_runs WHERE id = ...`, which can't
+   * see uncommitted rows across transactions and would drop the ping
+   * (`malformed payload` path).
+   *
+   * Failure mode: if the n8n trigger fails after the run has been
+   * committed, we mark the run `failed` in a follow-up txn rather than
+   * orphaning a pending row. The audit log breadcrumb survives even when
+   * the trigger blows up.
    */
   async create(
     dto: CreateWorkflowRunDto,
     tenantId: string,
     actor: RunActor,
   ): Promise<WorkflowRun> {
+    // Phase 1: validate + commit the run row so n8n callbacks can see it.
+    const insertedRun = await this.insertPendingRun(dto, tenantId);
+
+    // Phase 2: fire the trigger OUTSIDE the txn. If it fails, mark the run
+    // failed and rethrow.
+    let trigger;
+    try {
+      trigger = await this.executionAdapter.triggerExecution({
+        workflowVersionId: dto.workflowVersionId,
+        tenantId,
+        runId: insertedRun.id,
+        input: dto.input,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `n8n trigger failed for run ${insertedRun.id}; marking failed: ${(err as Error).message}`,
+      );
+      await this.markRunFailed(insertedRun.id, tenantId, err as Error);
+      if (err instanceof N8nExecutionError) {
+        this.logger.warn(`run create failed: ${err.code} ${err.message}`);
+      }
+      throw err;
+    }
+
+    // Phase 3: stash the provider id + audit, in a small follow-up txn.
+    return this.stashProviderAndAudit(insertedRun.id, tenantId, dto, actor, trigger);
+  }
+
+  private async insertPendingRun(
+    dto: CreateWorkflowRunDto,
+    tenantId: string,
+  ): Promise<WorkflowRun> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
 
-      // Confirm the version belongs to this tenant and is published.
       const versionRes = await client.query(
         `SELECT v.id
            FROM workflow_versions v
@@ -77,18 +118,29 @@ export class RunsService {
           dto.input ?? {},
         ],
       );
-      const run = mapRow(insertRes.rows[0]);
 
-      const trigger = await this.executionAdapter.triggerExecution({
-        workflowVersionId: dto.workflowVersionId,
-        tenantId,
-        runId: run.id,
-        input: dto.input,
-      });
+      await client.query('COMMIT');
+      return mapRow(insertRes.rows[0]);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 
-      // Stash the provider executionId so cancel/reconcile paths can find it.
-      // Using `input.__provider` rather than adding a column keeps this slice
-      // schema-light; an explicit column is a candidate for Phase 2.5b.
+  private async stashProviderAndAudit(
+    runId: string,
+    tenantId: string,
+    dto: CreateWorkflowRunDto,
+    actor: RunActor,
+    trigger: { providerExecutionId: string; n8nWorkflowId: string },
+  ): Promise<WorkflowRun> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+
       const stashed = await client.query(
         `UPDATE workflow_runs
             SET input = jsonb_set(coalesce(input, '{}'::jsonb), '{__provider}', $2::jsonb, true),
@@ -96,7 +148,7 @@ export class RunsService {
           WHERE id = $1
         RETURNING *`,
         [
-          run.id,
+          runId,
           JSON.stringify({
             providerExecutionId: trigger.providerExecutionId,
             n8nWorkflowId: trigger.n8nWorkflowId,
@@ -111,7 +163,7 @@ export class RunsService {
           actorType: actor.userId ? 'user' : 'service_account',
           action: 'workflow.run.started',
           resourceType: 'workflow_run',
-          resourceId: run.id,
+          resourceId: runId,
           metadata: {
             workflowVersionId: dto.workflowVersionId,
             providerExecutionId: trigger.providerExecutionId,
@@ -125,10 +177,42 @@ export class RunsService {
       return mapRow(stashed.rows[0]);
     } catch (err) {
       await client.query('ROLLBACK');
-      if (err instanceof N8nExecutionError) {
-        this.logger.warn(`run create failed: ${err.code} ${err.message}`);
-      }
       throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async markRunFailed(runId: string, tenantId: string, cause: Error): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+      await client.query(
+        `UPDATE workflow_runs
+            SET status = 'failed',
+                completed_at = COALESCE(completed_at, now()),
+                error_details = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND status NOT IN ('cancelled', 'succeeded', 'failed')`,
+        [runId, { reason: 'trigger_failed', message: cause.message }],
+      );
+      await this.audit.log(
+        {
+          tenantId,
+          actorType: 'system',
+          action: 'workflow.run.trigger_failed',
+          resourceType: 'workflow_run',
+          resourceId: runId,
+          metadata: { message: cause.message, name: cause.name },
+        },
+        client,
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      this.logger.warn(`failed to mark run ${runId} as failed: ${(err as Error).message}`);
     } finally {
       client.release();
     }

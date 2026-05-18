@@ -6,11 +6,24 @@
 -- ids and the sequence so the receiver can fetch the full row under the
 -- correct RLS scope. AFTER INSERT ordering matters: the existing
 -- next_event_sequence() BEFORE trigger must have already populated NEW.sequence.
+--
+-- SECURITY DEFINER + pinned search_path:
+-- The lookup against workflow_runs would otherwise inherit the inserting
+-- session's RLS context. Any insert path that forgets `set_config('app.tenant_id', ...)`
+-- (e.g. a future system-level reconcile job) would resolve v_tenant to NULL
+-- and the SSE/failure-hook consumers would silently drop the event (Copilot
+-- review PR #65). DEFINER bypasses RLS for the tenant lookup only; the trigger
+-- function does not insert or expose anything beyond what the inserting role
+-- already had access to. Hard-failing on NULL keeps misuse loud rather than
+-- silent.
 CREATE OR REPLACE FUNCTION notify_run_event() RETURNS TRIGGER AS $$
 DECLARE
   v_tenant UUID;
 BEGIN
   SELECT tenant_id INTO v_tenant FROM workflow_runs WHERE id = NEW.run_id;
+  IF v_tenant IS NULL THEN
+    RAISE EXCEPTION 'notify_run_event: workflow_runs.tenant_id not found for run_id=%', NEW.run_id;
+  END IF;
   PERFORM pg_notify(
     'run_events',
     json_build_object(
@@ -24,7 +37,7 @@ BEGIN
   );
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public;
 
 CREATE TRIGGER run_events_notify
   AFTER INSERT ON run_events
@@ -36,6 +49,17 @@ CREATE TRIGGER run_events_notify
 -- Partial WHERE status='pending' keeps the index small (resolved triggers don't
 -- need uniqueness — the same fingerprint may legitimately re-fire after a
 -- prior proposal landed).
+--
+-- The COALESCE expression is wrapped in parens so the matching
+-- `ON CONFLICT (...)` clause in INSERTs parses it as an index_expression
+-- (per PG `INSERT ... ON CONFLICT` grammar — Copilot review PR #65).
 CREATE UNIQUE INDEX idx_proposal_triggers_pending_dedupe
-  ON proposal_triggers (workflow_run_id, COALESCE(step_run_id, '00000000-0000-0000-0000-000000000000'::uuid), error_fingerprint)
+  ON proposal_triggers (workflow_run_id, (COALESCE(step_run_id, '00000000-0000-0000-0000-000000000000'::uuid)), error_fingerprint)
   WHERE status = 'pending';
+
+-- Functional index for the n8n-webhook dedup probe
+-- (`WHERE event_data->>'event_id' = $1`). Without this, every webhook
+-- delivery scans the run_events table; with the new failure-hook in Phase
+-- 2.5a, webhook traffic grows with run count (Gemini review PR #65).
+CREATE INDEX idx_run_events_event_id_dedupe
+  ON run_events ((event_data->>'event_id'));

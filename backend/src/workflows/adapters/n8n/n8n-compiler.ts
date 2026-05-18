@@ -477,7 +477,11 @@ function cancelCheckNode(name: string, x: number, y: number): N8nNode {
         conditions: [
           {
             id: 'cancel-check',
-            leftValue: '={{ $json.cancelled === true }}',
+            // Pass the raw boolean through; the operator below does the
+            // truthiness check. Doing `=== true` here AND running the
+            // boolean.true operator double-evaluates and risks coercion
+            // surprises across n8n IF v2 minor versions (Copilot review PR #65).
+            leftValue: '={{ $json.cancelled }}',
             rightValue: '',
             operator: { type: 'boolean', operation: 'true', singleValue: true },
           },

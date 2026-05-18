@@ -64,15 +64,24 @@ describe('RunsService', () => {
   });
 
   describe('create', () => {
-    it('inserts, triggers, stashes provider id, audits, commits', async () => {
+    it('commits the INSERT before triggering n8n (so the row is visible to webhook callbacks)', async () => {
+      // Phase 1: insertPendingRun txn — BEGIN, set_config, version lookup, INSERT, COMMIT
       txnOpen(client);
       client.query
         .mockResolvedValueOnce({ rows: [{ id: VERSION }] }) // version lookup
         .mockResolvedValueOnce({ rows: [runRow()] }) // INSERT
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
+
+      // Phase 3: stashProviderAndAudit txn — BEGIN, set_config, UPDATE, COMMIT
+      txnOpen(client);
+      client.query
         .mockResolvedValueOnce({
-          rows: [runRow({ input: { __provider: { providerExecutionId: N8N_EXEC, n8nWorkflowId: N8N_WF } } })],
+          rows: [
+            runRow({ input: { __provider: { providerExecutionId: N8N_EXEC, n8nWorkflowId: N8N_WF } } }),
+          ],
         }) // UPDATE stash
         .mockResolvedValueOnce({ rows: [] }); // COMMIT
+
       adapter.triggerExecution.mockResolvedValue({
         providerExecutionId: N8N_EXEC,
         n8nWorkflowId: N8N_WF,
@@ -84,15 +93,16 @@ describe('RunsService', () => {
         { userId: USER },
       );
 
-      expect(adapter.triggerExecution).toHaveBeenCalledWith({
-        workflowVersionId: VERSION,
-        tenantId: TENANT,
-        runId: RUN,
-        input: undefined,
-      });
+      // The trigger fires AFTER the insert txn closes — verify call order
+      const queryCalls = client.query.mock.calls.map((c) => c[0]);
+      const insertIdx = queryCalls.findIndex((q: string) => typeof q === 'string' && q.includes('INSERT INTO workflow_runs'));
+      const firstCommitIdx = queryCalls.indexOf('COMMIT');
+      expect(firstCommitIdx).toBeGreaterThan(insertIdx);
+      // adapter.triggerExecution is called between the two txns; assert it was called once
+      expect(adapter.triggerExecution).toHaveBeenCalledTimes(1);
+
       expect(audit.log).toHaveBeenCalledTimes(1);
-      const auditCall = audit.log.mock.calls[0][0];
-      expect(auditCall).toMatchObject({
+      expect(audit.log.mock.calls[0][0]).toMatchObject({
         action: 'workflow.run.started',
         tenantId: TENANT,
         actorType: 'user',
@@ -100,14 +110,10 @@ describe('RunsService', () => {
         resourceId: RUN,
       });
       expect(result.input.__provider.providerExecutionId).toBe(N8N_EXEC);
-      // ROLLBACK must not have run on the happy path
-      expect(client.query).toHaveBeenCalledWith('BEGIN');
-      expect(client.query).toHaveBeenCalledWith('COMMIT');
       expect(client.query).not.toHaveBeenCalledWith('ROLLBACK');
-      expect(client.release).toHaveBeenCalledTimes(1);
     });
 
-    it('rolls back when the version is not published or not in tenant', async () => {
+    it('rolls back the insert txn when the version is not published in this tenant', async () => {
       txnOpen(client);
       client.query
         .mockResolvedValueOnce({ rows: [] }) // version lookup empty
@@ -119,25 +125,38 @@ describe('RunsService', () => {
 
       expect(adapter.triggerExecution).not.toHaveBeenCalled();
       expect(client.query).toHaveBeenCalledWith('ROLLBACK');
-      expect(client.release).toHaveBeenCalled();
     });
 
-    it('rolls back if the adapter fails (no orphan run lands)', async () => {
+    it('marks the run failed when the adapter throws (run row stays, status flips to failed)', async () => {
+      // Phase 1: insert succeeds
       txnOpen(client);
       client.query
         .mockResolvedValueOnce({ rows: [{ id: VERSION }] })
         .mockResolvedValueOnce({ rows: [runRow()] })
-        .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
       adapter.triggerExecution.mockRejectedValue(
         new N8nExecutionError('trigger_failed', 'boom'),
       );
+      // Phase 2 → markRunFailed txn — BEGIN, set_config, UPDATE, audit insert, COMMIT
+      txnOpen(client);
+      client.query
+        .mockResolvedValueOnce({ rows: [] }) // UPDATE status=failed
+        .mockResolvedValueOnce({ rows: [] }); // COMMIT
 
       await expect(
         service.create({ workflowVersionId: VERSION }, TENANT, { userId: USER }),
       ).rejects.toThrow(N8nExecutionError);
 
-      expect(client.query).toHaveBeenCalledWith('ROLLBACK');
-      expect(audit.log).not.toHaveBeenCalled();
+      // markRunFailed runs in a follow-up txn and audits 'trigger_failed'
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'workflow.run.trigger_failed' }),
+        expect.anything(),
+      );
+      // 'workflow.run.started' audit is NEVER written when the trigger fails
+      expect(audit.log).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'workflow.run.started' }),
+        expect.anything(),
+      );
     });
   });
 

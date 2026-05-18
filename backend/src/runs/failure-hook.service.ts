@@ -165,11 +165,16 @@ export class FailureHookService implements OnModuleInit {
     // (migration 013) covers the (workflow_run_id, step_run_id,
     // error_fingerprint) tuple for status='pending'. ON CONFLICT DO NOTHING
     // makes the insert idempotent without throwing.
+    // ON CONFLICT must match the partial unique index expression in migration
+    // 013 exactly: the COALESCE is wrapped in parens so the parser treats it
+    // as an index_expression rather than a bare column ref. The trailing
+    // `WHERE status='pending'` infers the matching partial index per
+    // PG INSERT...ON CONFLICT grammar.
     const res = await client.query(
       `INSERT INTO proposal_triggers
             (tenant_id, workflow_run_id, step_run_id, error_fingerprint, trigger_context, status)
          VALUES ($1, $2, $3, $4, $5, 'pending')
-         ON CONFLICT (workflow_run_id, COALESCE(step_run_id, '00000000-0000-0000-0000-000000000000'::uuid), error_fingerprint)
+         ON CONFLICT (workflow_run_id, (COALESCE(step_run_id, '00000000-0000-0000-0000-000000000000'::uuid)), error_fingerprint)
             WHERE status = 'pending'
          DO NOTHING
          RETURNING id`,
@@ -259,5 +264,8 @@ export function extractFailedNodes(data: N8nExecutionData | undefined): FailedNo
 }
 
 function fingerprint(name: string, message: string): string {
-  return createHash('sha1').update(`${name}:${message}`).digest('hex').slice(0, 16);
+  // SHA-256 (64-bit truncated to 16 hex chars). The fingerprint is a dedupe
+  // key, not a security primitive, but SHA-256 aligns with modern hashing
+  // defaults (Gemini review PR #65) and is no slower in practice.
+  return createHash('sha256').update(`${name}:${message}`).digest('hex').slice(0, 16);
 }
