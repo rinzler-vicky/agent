@@ -9,6 +9,7 @@ import { TenantsModule } from './tenants/tenants.module';
 import { AuditModule } from './audit/audit.module';
 import { StorageModule } from './storage/storage.module';
 import { WorkflowsModule } from './workflows/workflows.module';
+import { RunsModule } from './runs/runs.module';
 import { TenantMiddleware } from './auth/tenant.middleware';
 
 // WorkflowsModule is imported unconditionally so SwaggerModule can reflect
@@ -33,6 +34,7 @@ import { TenantMiddleware } from './auth/tenant.middleware';
     AuditModule,
     StorageModule,
     WorkflowsModule,
+    RunsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
