@@ -1,6 +1,7 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
@@ -10,6 +11,7 @@ import { AuditModule } from './audit/audit.module';
 import { StorageModule } from './storage/storage.module';
 import { WorkflowsModule } from './workflows/workflows.module';
 import { RunsModule } from './runs/runs.module';
+import { PreviewsModule } from './previews/previews.module';
 import { TenantMiddleware } from './auth/tenant.middleware';
 
 // WorkflowsModule is imported unconditionally so SwaggerModule can reflect
@@ -26,6 +28,7 @@ import { TenantMiddleware } from './auth/tenant.middleware';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
+    ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     DatabaseModule,
     HealthModule,
@@ -35,6 +38,7 @@ import { TenantMiddleware } from './auth/tenant.middleware';
     StorageModule,
     WorkflowsModule,
     RunsModule,
+    PreviewsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
