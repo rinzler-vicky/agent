@@ -13,7 +13,14 @@ import { Observable, Subject, interval, merge } from 'rxjs';
 import { finalize, map, takeUntil } from 'rxjs/operators';
 import { DATABASE_POOL } from '@/database/database.module';
 
-const CHANNEL = 'run_events';
+const RUN_EVENTS_CHANNEL = 'run_events';
+const WORKFLOW_PROPOSALS_CHANNEL = 'workflow_proposals';
+
+// Channels we LISTEN on. Each channel name doubles as the EventEmitter
+// event name on `notifications` — consumers register with the channel they
+// care about (e.g. FailureHookService -> 'run_events', AgentPreviewSpawner
+// -> 'workflow_proposals').
+const CHANNELS = [RUN_EVENTS_CHANNEL, WORKFLOW_PROPOSALS_CHANNEL] as const;
 
 export interface NotifyPayload {
   run_id: string;
@@ -22,6 +29,18 @@ export interface NotifyPayload {
   event_type: string;
   step_run_id: string | null;
   event_id: string;
+}
+
+/**
+ * Payload shape emitted on the `workflow_proposals` channel by the AFTER
+ * INSERT trigger added in migration 014. Consumed by AgentPreviewSpawnerService.
+ */
+export interface WorkflowProposalNotifyPayload {
+  version_id: string;
+  tenant_id: string;
+  workflow_def_id: string;
+  parent_version_id: string | null;
+  proposal_source: string;
 }
 
 interface RunSubscription {
@@ -142,10 +161,12 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
     });
     try {
       await client.connect();
-      await client.query(`LISTEN ${CHANNEL}`);
+      for (const channel of CHANNELS) {
+        await client.query(`LISTEN ${channel}`);
+      }
       this.client = client;
       this.reconnectAttempts = 0;
-      this.logger.log(`SSE subscriber listening on channel "${CHANNEL}"`);
+      this.logger.log(`SSE subscriber listening on channels: ${CHANNELS.join(', ')}`);
     } catch (err) {
       this.logger.warn(`LISTEN connect failed: ${(err as Error).message}`);
       try { await client.end(); } catch { /* ignore */ }
@@ -169,22 +190,33 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Handle one Postgres NOTIFY message. Re-emits on the in-process bus for
-   * non-SSE consumers (FailureHookService) and pushes to any per-run SSE
-   * subjects. RLS is honored by re-fetching the full row under the run's
-   * tenant scope when the SSE pipeline needs `event_data`.
+   * non-SSE consumers (FailureHookService for run_events, AgentPreviewSpawner
+   * for workflow_proposals) and pushes to any per-run SSE subjects. RLS is
+   * honored by re-fetching the full row under the run's tenant scope when
+   * the SSE pipeline needs `event_data`.
    */
   private onNotification(msg: { channel: string; payload?: string }): void {
-    if (msg.channel !== CHANNEL || !msg.payload) return;
-    let payload: NotifyPayload;
+    if (!msg.payload) return;
+    let payload: unknown;
     try {
       payload = JSON.parse(msg.payload);
     } catch (err) {
-      this.logger.warn(`malformed NOTIFY payload: ${(err as Error).message}`);
+      this.logger.warn(`malformed NOTIFY payload on ${msg.channel}: ${(err as Error).message}`);
       return;
     }
-    this.notifications.emit('event', payload);
 
-    const subs = this.subscribers.get(payload.run_id);
+    if (msg.channel === WORKFLOW_PROPOSALS_CHANNEL) {
+      // No per-run fan-out needed — emit and return.
+      this.notifications.emit(WORKFLOW_PROPOSALS_CHANNEL, payload as WorkflowProposalNotifyPayload);
+      return;
+    }
+
+    if (msg.channel !== RUN_EVENTS_CHANNEL) return;
+
+    const runPayload = payload as NotifyPayload;
+    this.notifications.emit(RUN_EVENTS_CHANNEL, runPayload);
+
+    const subs = this.subscribers.get(runPayload.run_id);
     if (!subs || subs.size === 0) return;
 
     // Serialize per-run fan-out: chain the new task off the previous tail
@@ -192,9 +224,9 @@ export class SseSubscriberService implements OnModuleInit, OnModuleDestroy {
     // `fetchEventRow` and silently drop the lower-sequence event. The
     // chain is keyed per-run so a slow fetch on one run doesn't stall
     // other runs.
-    const runId = payload.run_id;
+    const runId = runPayload.run_id;
     const prev = this.fanoutTails.get(runId) ?? Promise.resolve();
-    const next = prev.then(() => this.fanOut(payload, subs));
+    const next = prev.then(() => this.fanOut(runPayload, subs));
     this.fanoutTails.set(runId, next);
     void next.finally(() => {
       // Drop the tail when it's the current one — otherwise newer

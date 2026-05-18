@@ -53,7 +53,9 @@ export class FailureHookService implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    this.subscriber.notifications.on('event', (payload: NotifyPayload) => {
+    // Phase 2.5b: the subscriber now LISTENs on multiple channels and emits
+    // them as channel-named events. We only care about run_events here.
+    this.subscriber.notifications.on('run_events', (payload: NotifyPayload) => {
       if (payload.event_type !== 'workflow.failed') return;
       // Fire-and-forget — log on failure but don't block the LISTEN loop.
       void this.handle(payload).catch((err) =>

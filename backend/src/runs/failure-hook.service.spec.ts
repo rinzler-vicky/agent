@@ -118,7 +118,7 @@ describe('extractFailedNodes', () => {
 
 describe('FailureHookService', () => {
   const emitFailedEvent = (subscriber: SseSubscriberService) =>
-    subscriber.notifications.emit('event', {
+    subscriber.notifications.emit('run_events', {
       run_id: RUN,
       tenant_id: TENANT,
       sequence: 9,
@@ -129,7 +129,7 @@ describe('FailureHookService', () => {
 
   it('ignores non-failure events', async () => {
     const { subscriber, api } = await buildService();
-    subscriber.notifications.emit('event', {
+    subscriber.notifications.emit('run_events', {
       run_id: RUN, tenant_id: TENANT, sequence: 1,
       event_type: 'step.completed', step_run_id: null, event_id: 'evt-1',
     });
