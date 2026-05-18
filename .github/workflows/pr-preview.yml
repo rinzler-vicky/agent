@@ -319,30 +319,65 @@ jobs:
           OWNER_ID: ${{ steps.render.outputs.owner_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          N8N_NEEDED: ${{ steps.filter.outputs.n8n }}
         run: |
           set -euo pipefail
           RENDER_API_BASE='https://api.render.com/v1'
           # Render's GET /v1/services caps `limit` at 100 (verified against
-          # api-docs.render.com/reference/list-services). Anything above
-          # returns HTTP 400 — caused the original CI failure on this PR.
+          # api-docs.render.com/reference/list-services).
           SERVICES="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
             "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")"
 
-          N8N_ID=$(echo "${SERVICES}" | jq -r \
-            --arg branch "${PR_BRANCH}" \
-            --arg prSuffix "-pr-${PR_NUMBER}" \
+          # Two-pass on the single listing:
+          # 1) PARENT: any agent-n8n service (main branch). If absent, the
+          #    Blueprint hasn't been re-adopted to include agent-n8n yet —
+          #    no amount of polling will conjure a preview. Fast-fail with
+          #    operator guidance instead.
+          # 2) PREVIEW: the per-PR agent-n8n preview. If parent exists but
+          #    preview doesn't, Blueprint is mid-spawn — retry briefly.
+          PARENT_EXISTS=$(echo "${SERVICES}" | jq -r \
             '[.[] | .service // .
               | select((.name // "" | ascii_downcase) | startswith("agent-n8n"))
-              | select(((.branch // "") == $branch) or ((.name // "" | ascii_downcase) | endswith($prSuffix)))
-              | .id // empty
-            ] | first // empty')
+              | select((.serviceDetails.parentServer.id // null) == null)
+              | .id
+            ] | length')
+
+          match_preview() {
+            echo "${SERVICES}" | jq -r \
+              --arg branch "${PR_BRANCH}" \
+              --arg prSuffix "-pr-${PR_NUMBER}" \
+              '[.[] | .service // .
+                | select((.name // "" | ascii_downcase) | startswith("agent-n8n"))
+                | select((.serviceDetails.parentServer.id // "") != "")
+                | select(((.branch // "") == $branch) or ((.name // "" | ascii_downcase) | endswith($prSuffix)))
+                | .id // empty
+              ] | first // empty'
+          }
+
+          N8N_ID="$(match_preview)"
+
+          if [ -z "${N8N_ID}" ] && [ "${N8N_NEEDED}" = "true" ] && [ "${PARENT_EXISTS}" != "0" ]; then
+            # Parent service exists → Blueprint is adopted; the preview is
+            # racing PR open. Two more brief retries (10s, 20s) and refetch.
+            for backoff in 10 20; do
+              echo "n8n preview not yet visible; parent service exists — retrying in ${backoff}s..."
+              sleep "${backoff}"
+              SERVICES="$(curl -fsSL -H "Authorization: Bearer ${RENDER_API_KEY}" \
+                "${RENDER_API_BASE}/services?ownerId=${OWNER_ID}&includePreviews=true&limit=100")"
+              N8N_ID="$(match_preview)"
+              [ -n "${N8N_ID}" ] && break
+            done
+          fi
 
           echo "n8n_id=${N8N_ID}" >> "$GITHUB_OUTPUT"
+          echo "parent_exists=${PARENT_EXISTS}" >> "$GITHUB_OUTPUT"
 
           if [ -n "${N8N_ID}" ]; then
             echo "Discovered n8n preview service: ${N8N_ID}"
+          elif [ "${PARENT_EXISTS}" = "0" ]; then
+            echo "No agent-n8n service on the account at all — Blueprint hasn't been re-adopted for the new service block."
           else
-            echo "No n8n preview service found yet (Blueprint may still be provisioning, or service not declared)."
+            echo "agent-n8n parent exists but no preview matched after 3 attempts (~30s)."
           fi
 
       - name: Tear down n8n preview when paths-filter is false
@@ -365,14 +400,29 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           N8N_ID: ${{ steps.n8n_discover.outputs.n8n_id }}
+          PARENT_EXISTS: ${{ steps.n8n_discover.outputs.parent_exists }}
           NEON_DB_URL: ${{ steps.neon.outputs.db_url }}
         run: |
           set -euo pipefail
           RENDER_API_BASE='https://api.render.com/v1'
 
           if [ -z "${N8N_ID}" ]; then
-            echo "::error::n8n preview service not found; Blueprint may not include the agent-n8n service."
-            echo "Add the agent-n8n service to render.yaml and reconnect Blueprint."
+            if [ "${PARENT_EXISTS}" = "0" ]; then
+              echo "::error::agent-n8n service not present on the Render account — Blueprint has not been re-adopted to include it."
+              echo ""
+              echo "render.yaml declares agent-n8n, but Render's Blueprint sync still only knows about the old service set."
+              echo ""
+              echo "Fix (one-time, manual):"
+              echo "  1. Render dashboard > Blueprints > select this repo's Blueprint."
+              echo "  2. Click Sync so Render reads the updated render.yaml."
+              echo "  3. Provide values for any prompted sync:false env vars (e.g. N8N_ENCRYPTION_KEY)."
+              echo "  4. Re-run this workflow on the PR."
+            else
+              echo "::error::agent-n8n parent exists but no preview spawned for this PR after 3 discovery attempts (~30s)."
+              echo "Check the Blueprint event log in Render for the most recent PR — likely a spawn error (env var missing, image pull failure)."
+            fi
+            echo ""
+            echo "Full setup runbook: docs/PR_PREVIEWS.md §First-time setup / §n8n preview"
             exit 1
           fi
 
